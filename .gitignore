@@ -1,0 +1,43 @@
+# ============================================================
+# 抗量子密码协议库 / 抗量子证书生成工具
+# ============================================================
+
+# ---------- 工具链（不进版本库）----------
+# go1.22.12/ 是本机 macOS/amd64 版 Go 1.22.12，打了 crypto/tls 抗量子补丁（约 266M）。
+# 补丁见 patches/，重建方法见 docs/BUILD.md。
+/go1.22.12/
+
+# ---------- 交付/留档二进制（可由源码重新编译）----------
+/dist/
+
+# ---------- 构建产物 ----------
+**/go_build_example_com_pqtest
+**/linux_server
+**/linux_client
+**/windows_server.exe
+**/windows_client.exe
+# 无扩展名的 Go 可执行产物（与源码文件同名，逐个列出）
+/tls-hybrid/server/server
+/tls-hybrid/server/client
+/tls-hybrid/e2e/server
+/tls-hybrid/e2e/client
+/tls-hybrid/e2e/test
+/tls-hybrid/client/client
+/tls-hybrid/client/server
+/pqcert/*/pqcert
+
+# ---------- 系统 / 编辑器垃圾 ----------
+.DS_Store
+**/.DS_Store
+__MACOSX/
+.idea/
+*.iml
+.codex/
+.agents/
+*.swp
+*~
+*.bak
+
+# ---------- Go 其他产物 ----------
+*.out
+coverage.out

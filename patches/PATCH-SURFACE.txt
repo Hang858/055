@@ -1,0 +1,49 @@
+只在 <GOROOT>/src/cmd/cgo 中存在：zdefaultcc.go
+只在 <GOROOT>/src/cmd/go/internal/cfg 中存在：zdefaultcc.go
+只在 <GOROOT>/src/cmd/internal/objabi 中存在：zbootstrap.go
+只在 <GOROOT>/src/crypto 中存在：.DS_Store
+文件 src/ （上游）crypto/tls/alert.go 和 <GOROOT>/src/crypto/tls/alert.go 不同
+文件 src/ （上游）crypto/tls/auth.go 和 <GOROOT>/src/crypto/tls/auth.go 不同
+文件 src/ （上游）crypto/tls/auth_test.go 和 <GOROOT>/src/crypto/tls/auth_test.go 不同
+只在 <GOROOT>/src/crypto/tls 中存在：cfevent.go
+只在 <GOROOT>/src/crypto/tls 中存在：cfgo_test.go
+只在 <GOROOT>/src/crypto/tls 中存在：cfkem.go
+只在 <GOROOT>/src/crypto/tls 中存在：cfkem_test.go
+文件 src/ （上游）crypto/tls/common.go 和 <GOROOT>/src/crypto/tls/common.go 不同
+文件 src/ （上游）crypto/tls/conn.go 和 <GOROOT>/src/crypto/tls/conn.go 不同
+只在 <GOROOT>/src/crypto/tls 中存在：delegated_credentials.go
+只在 <GOROOT>/src/crypto/tls 中存在：delegated_credentials_test.go
+只在 <GOROOT>/src/crypto/tls 中存在：ech_config.go
+只在 <GOROOT>/src/crypto/tls 中存在：ech.go
+只在 <GOROOT>/src/crypto/tls 中存在：ech_provider.go
+只在 <GOROOT>/src/crypto/tls 中存在：ech_test.go
+文件 src/ （上游）crypto/tls/generate_cert.go 和 <GOROOT>/src/crypto/tls/generate_cert.go 不同
+只在 <GOROOT>/src/crypto/tls 中存在：generate_delegated_credential.go
+文件 src/ （上游）crypto/tls/handshake_client.go 和 <GOROOT>/src/crypto/tls/handshake_client.go 不同
+文件 src/ （上游）crypto/tls/handshake_client_tls13.go 和 <GOROOT>/src/crypto/tls/handshake_client_tls13.go 不同
+文件 src/ （上游）crypto/tls/handshake_messages.go 和 <GOROOT>/src/crypto/tls/handshake_messages.go 不同
+文件 src/ （上游）crypto/tls/handshake_messages_test.go 和 <GOROOT>/src/crypto/tls/handshake_messages_test.go 不同
+文件 src/ （上游）crypto/tls/handshake_server.go 和 <GOROOT>/src/crypto/tls/handshake_server.go 不同
+文件 src/ （上游）crypto/tls/handshake_server_test.go 和 <GOROOT>/src/crypto/tls/handshake_server_test.go 不同
+文件 src/ （上游）crypto/tls/handshake_server_tls13.go 和 <GOROOT>/src/crypto/tls/handshake_server_tls13.go 不同
+文件 src/ （上游）crypto/tls/handshake_test.go 和 <GOROOT>/src/crypto/tls/handshake_test.go 不同
+只在 <GOROOT>/src/crypto/tls 中存在：hpke.go
+文件 src/ （上游）crypto/tls/key_agreement.go 和 <GOROOT>/src/crypto/tls/key_agreement.go 不同
+只在 <GOROOT>/src/crypto/tls 中存在：metrics_test.go
+文件 src/ （上游）crypto/tls/prf.go 和 <GOROOT>/src/crypto/tls/prf.go 不同
+只在 <GOROOT>/src/crypto/tls 中存在：tls_cf_circl_test.go
+只在 <GOROOT>/src/crypto/tls 中存在：tls_cf.go
+只在 <GOROOT>/src/crypto/tls 中存在：tls_cf_test.go
+文件 src/ （上游）crypto/tls/tls.go 和 <GOROOT>/src/crypto/tls/tls.go 不同
+文件 src/ （上游）crypto/tls/tls_test.go 和 <GOROOT>/src/crypto/tls/tls_test.go 不同
+只在 <GOROOT>/src/crypto 中存在：tls1
+只在 <GOROOT>/src 中存在：.DS_Store
+只在 <GOROOT>/src/go/build 中存在：zcgo.go
+只在 <GOROOT>/src/internal/buildcfg 中存在：zbootstrap.go
+只在 <GOROOT>/src/runtime/internal/sys 中存在：zversion.go
+只在 <GOROOT>/src/time/tzdata 中存在：zzipdata.go
+只在 <GOROOT>/src/vendor 中存在：github.com
+只在 <GOROOT>/src/vendor/golang.org/x/crypto 中存在：blake2b
+只在 <GOROOT>/src/vendor/golang.org/x/crypto 中存在：blake2s
+文件 src/ （上游）vendor/modules.txt 和 <GOROOT>/src/vendor/modules.txt 不同
+只在 <GOROOT>/src 中存在：vendor1
