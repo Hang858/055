@@ -35,6 +35,11 @@ const (
 	// 256 比特量子安全等级
 	Dilithium5 // ML-DSA-87
 	Kyber1024
+	// 192 / 256 比特哈希签名（SLH-DSA）
+	SPHINCS192s
+	SPHINCS192f
+	SPHINCS256s
+	SPHINCS256f
 )
 
 var (
@@ -70,6 +75,14 @@ func getSPHINCSScheme(algo PQAlgorithm) sign.Scheme {
 		name = "SLH-DSA-SHA2-128s"
 	case SPHINCS128f:
 		name = "SLH-DSA-SHA2-128f"
+	case SPHINCS192s:
+		name = "SLH-DSA-SHA2-192s"
+	case SPHINCS192f:
+		name = "SLH-DSA-SHA2-192f"
+	case SPHINCS256s:
+		name = "SLH-DSA-SHA2-256s"
+	case SPHINCS256f:
+		name = "SLH-DSA-SHA2-256f"
 	default:
 		panic("不支持的 SPHINCS 算法")
 	}
@@ -95,7 +108,7 @@ func generateCAKey(algo PQAlgorithm) *PQKeyPair {
 		pk, sk, _ := mode5.GenerateKey(rand.Reader)
 		return &PQKeyPair{Algo: Dilithium5, SignSK: sk, SignPK: pk, PubBytes: pk.Bytes()}
 
-	case SPHINCS128s, SPHINCS128f:
+	case SPHINCS128s, SPHINCS128f, SPHINCS192s, SPHINCS192f, SPHINCS256s, SPHINCS256f:
 		scheme := getSPHINCSScheme(algo)
 		pk, sk, err := scheme.GenerateKey()
 		if err != nil {
@@ -147,7 +160,7 @@ func generateEndEntityKey(algo PQAlgorithm) *PQKeyPair {
 		pk, sk, _ := mode5.GenerateKey(rand.Reader)
 		return &PQKeyPair{Algo: Dilithium5, SignPK: pk, SignSK: sk, PubBytes: pk.Bytes()}
 
-	case SPHINCS128s, SPHINCS128f:
+	case SPHINCS128s, SPHINCS128f, SPHINCS192s, SPHINCS192f, SPHINCS256s, SPHINCS256f:
 		scheme := getSPHINCSScheme(algo)
 		pk, sk, err := scheme.GenerateKey()
 		if err != nil {
@@ -187,7 +200,7 @@ func pqSign(parentKey *PQKeyPair, tbs []byte) []byte {
 		mode5.SignTo(parentKey.SignSK.(*mode5.PrivateKey), tbs, sig)
 		return sig
 
-	case SPHINCS128s, SPHINCS128f:
+	case SPHINCS128s, SPHINCS128f, SPHINCS192s, SPHINCS192f, SPHINCS256s, SPHINCS256f:
 		sk, ok := parentKey.SignSK.(sign.PrivateKey)
 		if !ok {
 			panic("invalid SPHINCS private key type")
@@ -438,6 +451,17 @@ func main() {
 	user8 := genEndEntity(i2RSA, i2Cert, i2PQ, Kyber1024, "user-kyber1024")
 	printCert(user8, "用户证书 Kyber-1024 (256 比特 KEM)")
 	saveCert(user8, "user_kyber1024.pem")
+
+	// 192 / 256 比特哈希签名（SLH-DSA）
+	fmt.Println("\n=== 192 / 256 比特哈希签名用户证书 ===")
+
+	user9 := genEndEntity(i2RSA, i2Cert, i2PQ, SPHINCS192f, "user-slhdsa192f")
+	printCert(user9, "用户证书 SLH-DSA-SHA2-192f (192 比特签名)")
+	saveCert(user9, "user_slhdsa192f.pem")
+
+	user10 := genEndEntity(i2RSA, i2Cert, i2PQ, SPHINCS256f, "user-slhdsa256f")
+	printCert(user10, "用户证书 SLH-DSA-SHA2-256f (256 比特签名)")
+	saveCert(user10, "user_slhdsa256f.pem")
 
 	fmt.Println("\n===== 标准 RSA 证书链验签 =====")
 	roots := x509.NewCertPool()

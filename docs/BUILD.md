@@ -108,11 +108,19 @@ cd pqcert/gen-sm2-chain  && go run .          # 同上（SM2 版）
 
 **量子安全等级覆盖（三个工具一致）**
 
-| 等级 | 签名算法 | KEM 算法 |
-|---|---|---|
-| 128 比特 | ML-DSA-44 / Dilithium2 | Kyber-512 |
-| 192 比特 | ML-DSA-65 / Dilithium3 | Kyber-768 |
-| **256 比特** | **ML-DSA-87 / Dilithium5** | **Kyber-1024** |
+| 等级 | 签名（格） | 签名（哈希） | KEM |
+|---|---|---|---|
+| 128 比特 | ML-DSA-44 / Dilithium2 | SLH-DSA-SHA2-128s / 128f | Kyber-512 |
+| 192 比特 | ML-DSA-65 / Dilithium3 | SLH-DSA-SHA2-192s / 192f | Kyber-768 |
+| **256 比特** | **ML-DSA-87 / Dilithium5** | **SLH-DSA-SHA2-256s / 256f** | **Kyber-1024** |
+
+SLH-DSA 由 CIRCL v1.6.3 提供，`schemes.ByName("SLH-DSA-SHA2-256f")` 即可切换；
+实测耗时（本机）：128s 签名 0.85s、128f 0.04s、192s 1.50s、192f 0.07s、
+256s 1.31s、256f 0.14s；`pure-pq` 五条链全部生成+验签总耗时约 7s。
+`s`（小签名/慢）与 `f`（大签名/快）按需选择，本仓库链验证用 `s` 变体、批量出证书用 `f` 变体。
+
+> `pqcert/sm2` 是「SM2 与抗量子混合」工具，只覆盖 Dilithium2/3/5 + Kyber-512/768/1024，
+> 不含 SLH-DSA；SLH-DSA 由 `pure-pq` 与 `x509-multi` 覆盖。
 
 - 外部公钥数据：`pqcert/data/public_keys.txt`（含 `[SM2]`、`[ML-DSA-44]`、`[ML-DSA-44-Signature]`、`[PQ-ECC-Signature]` 段）
 - 示例输出：`pqcert/certs-sample/`（`mldsa_root.pem`、`mldsa_user.pem`、`sm2_root.pem`、`sm2_user.pem`）

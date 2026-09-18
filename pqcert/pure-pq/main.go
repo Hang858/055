@@ -77,6 +77,11 @@ var (
 	// 实验用 SPHINCS / SLH-DSA OID
 	oidSLHDSA128s = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 10, 1}
 	oidSLHDSA128f = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 10, 2}
+	// 192 / 256 比特量子安全等级（哈希签名）
+	oidSLHDSA192s = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 10, 3}
+	oidSLHDSA192f = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 10, 4}
+	oidSLHDSA256s = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 10, 5}
+	oidSLHDSA256f = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 10, 6}
 
 	oidBasicConstraints = asn1.ObjectIdentifier{2, 5, 29, 19}
 	oidKeyUsage         = asn1.ObjectIdentifier{2, 5, 29, 15}
@@ -123,7 +128,13 @@ func createExtension(oid asn1.ObjectIdentifier, critical bool, value any) Extens
 }
 
 func isSLHDSA(algoOID asn1.ObjectIdentifier) bool {
-	return algoOID.Equal(oidSLHDSA128s) || algoOID.Equal(oidSLHDSA128f)
+	switch {
+	case algoOID.Equal(oidSLHDSA128s), algoOID.Equal(oidSLHDSA128f),
+		algoOID.Equal(oidSLHDSA192s), algoOID.Equal(oidSLHDSA192f),
+		algoOID.Equal(oidSLHDSA256s), algoOID.Equal(oidSLHDSA256f):
+		return true
+	}
+	return false
 }
 
 func getSLHDSAScheme(algoOID asn1.ObjectIdentifier) sign.Scheme {
@@ -134,6 +145,14 @@ func getSLHDSAScheme(algoOID asn1.ObjectIdentifier) sign.Scheme {
 		name = "SLH-DSA-SHA2-128s"
 	case algoOID.Equal(oidSLHDSA128f):
 		name = "SLH-DSA-SHA2-128f"
+	case algoOID.Equal(oidSLHDSA192s):
+		name = "SLH-DSA-SHA2-192s"
+	case algoOID.Equal(oidSLHDSA192f):
+		name = "SLH-DSA-SHA2-192f"
+	case algoOID.Equal(oidSLHDSA256s):
+		name = "SLH-DSA-SHA2-256s"
+	case algoOID.Equal(oidSLHDSA256f):
+		name = "SLH-DSA-SHA2-256f"
 	default:
 		panic("unsupported SPHINCS / SLH-DSA algorithm")
 	}
@@ -355,9 +374,17 @@ func oidToName(oid asn1.ObjectIdentifier) string {
 	case oid.Equal(oidMLDSA87):
 		return "ML-DSA-87 / Dilithium5（256 比特量子安全等级）"
 	case oid.Equal(oidSLHDSA128s):
-		return "SLH-DSA-SHA2-128s / SPHINCS+"
+		return "SLH-DSA-SHA2-128s / SPHINCS+（128 比特量子安全等级）"
 	case oid.Equal(oidSLHDSA128f):
-		return "SLH-DSA-SHA2-128f / SPHINCS+"
+		return "SLH-DSA-SHA2-128f / SPHINCS+（128 比特量子安全等级）"
+	case oid.Equal(oidSLHDSA192s):
+		return "SLH-DSA-SHA2-192s / SPHINCS+（192 比特量子安全等级）"
+	case oid.Equal(oidSLHDSA192f):
+		return "SLH-DSA-SHA2-192f / SPHINCS+（192 比特量子安全等级）"
+	case oid.Equal(oidSLHDSA256s):
+		return "SLH-DSA-SHA2-256s / SPHINCS+（256 比特量子安全等级）"
+	case oid.Equal(oidSLHDSA256f):
+		return "SLH-DSA-SHA2-256f / SPHINCS+（256 比特量子安全等级）"
 	case oid.Equal(oidKyber512):
 		return "Kyber-512"
 	case oid.Equal(oidKyber768):
@@ -539,7 +566,7 @@ func buildChain(
 
 func main() {
 	ensureDir()
-	fmt.Println("=== 四套纯抗量子 X.509 v3 证书链：Kyber / Dilithium / SPHINCS / 256比特等级 ===")
+	fmt.Println("=== 五套纯抗量子 X.509 v3 证书链：Kyber / Dilithium / SPHINCS / 256比特等级 / 哈希签名256 ===")
 
 	// 1. Kyber 用户证书链：
 	// Root 和 Intermediate 用 Dilithium 签名，User 公钥是 Kyber
@@ -601,6 +628,21 @@ func main() {
 		"user_kyber1024.pem",
 	)
 
+	// 5. 256 比特等级哈希签名链（SLH-DSA）：
+	// Root、Intermediate、User 全部使用 SLH-DSA-SHA2-256s（哈希签名，256 比特量子安全等级）
+	slh256OK := buildChain(
+		"链5：256 比特等级哈希签名链（SLH-DSA-SHA2-256s）",
+		"SLHDSA256-Chain-Root",
+		"SLHDSA256-Chain-Intermediate",
+		"user-slhdsa256s",
+		oidSLHDSA256s,
+		oidSLHDSA256s,
+		oidSLHDSA256s,
+		"slhdsa256_chain_root.pem",
+		"slhdsa256_chain_intermediate.pem",
+		"user_slhdsa256s.pem",
+	)
+
 	fmt.Println("\n==================================================")
 	fmt.Println("🎉 最终结果")
 	fmt.Println("==================================================")
@@ -608,11 +650,12 @@ func main() {
 	fmt.Printf("Dilithium证书链可信: %v\n", dilithiumOK)
 	fmt.Printf("SPHINCS证书链可信: %v\n", sphincsOK)
 	fmt.Printf("256比特等级链(ML-DSA-87)可信: %v\n", level256OK)
+	fmt.Printf("256比特哈希签名链(SLH-DSA-256s)可信: %v\n", slh256OK)
 
 	fmt.Println("\n量子安全等级覆盖：")
-	fmt.Println("  128 比特：ML-DSA-44/Dilithium2（签名）、Kyber-512（KEM）")
-	fmt.Println("  192 比特：ML-DSA-65/Dilithium3（签名）、Kyber-768（KEM）")
-	fmt.Println("  256 比特：ML-DSA-87/Dilithium5（签名）、Kyber-1024（KEM）")
+	fmt.Println("  128 比特：ML-DSA-44/Dilithium2、SLH-DSA-SHA2-128s/128f（签名）；Kyber-512（KEM）")
+	fmt.Println("  192 比特：ML-DSA-65/Dilithium3、SLH-DSA-SHA2-192s/192f（签名）；Kyber-768（KEM）")
+	fmt.Println("  256 比特：ML-DSA-87/Dilithium5、SLH-DSA-SHA2-256s/256f（签名）；Kyber-1024（KEM）")
 
 	fmt.Println("\n✅ 全部完成！")
 }
