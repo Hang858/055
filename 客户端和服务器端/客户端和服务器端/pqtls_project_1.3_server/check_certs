@@ -1,0 +1,65 @@
+//// check_certs.go
+//package main
+//
+//import (
+//	"crypto/x509"
+//	"encoding/pem"
+//	"fmt"
+//	"log"
+//	"os"
+//)
+//
+//func checkCertificate(filename string) {
+//	fmt.Printf("\n检查证书文件: %s\n", filename)
+//	data, err := os.ReadFile(filename)
+//	if err != nil {
+//		log.Printf("读取文件失败: %v", err)
+//		return
+//	}
+//
+//	block, rest := pem.Decode(data)
+//	if block == nil {
+//		log.Printf("不是有效的PEM格式")
+//		return
+//	}
+//
+//	if len(rest) > 0 {
+//		log.Printf("警告: PEM文件包含额外数据 (%d bytes)", len(rest))
+//	}
+//
+//	fmt.Printf("PEM类型: %s\n", block.Type)
+//
+//	switch block.Type {
+//	case "CERTIFICATE":
+//		cert, err := x509.ParseCertificate(block.Bytes)
+//		if err != nil {
+//			log.Printf("解析证书失败: %v", err)
+//			return
+//		}
+//		fmt.Printf("证书主题: %s\n", cert.Subject.CommonName)
+//		fmt.Printf("颁发者: %s\n", cert.Issuer.CommonName)
+//		fmt.Printf("有效期: %s 到 %s\n", cert.NotBefore, cert.NotAfter)
+//		fmt.Printf("序列号: %s\n", cert.SerialNumber)
+//		fmt.Printf("是否CA: %t\n", cert.IsCA)
+//
+//	case "PRIVATE KEY", "RSA PRIVATE KEY":
+//		fmt.Printf("私钥文件，跳过详细解析\n")
+//
+//	default:
+//		fmt.Printf("未知的PEM类型\n")
+//	}
+//}
+//
+//func main() {
+//	files := []string{
+//		"pqcerts/root-ca.pem",
+//		"pqcerts/intermediate1-ca.pem",
+//		"pqcerts/intermediate2-ca.pem",
+//		"pqcerts/end-entity.pem",
+//		"pqcerts/end-entity-key.pem",
+//	}
+//
+//	for _, file := range files {
+//		checkCertificate(file)
+//	}
+//}
