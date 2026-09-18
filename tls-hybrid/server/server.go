@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 )
 
 func encrypt(key []byte, plaintext []byte) ([]byte, error) {
@@ -108,39 +109,87 @@ var supportedKEX = func() []tls.CurveID {
 	return append(list, tls.X25519) // 传统算法，用于兼容性回退
 }()
 
-var kexFlag = flag.String("kex", "", "只启用指定的密钥交换组（默认启用全部）")
+var kexFlag = flag.String("kex", "", "启用的密钥交换组，可用逗号分隔多个（默认启用全部）")
 
-// selectKEX 依据 -kex 参数选择启用哪些密钥交换组。
+// kexByName 组名 → CurveID。DummyKex(0xfe33) 是预留给 HelloRetryRequest 测试的
+// “服务端不会支持”的组：客户端把它放在首位、同时 supported_groups 里保留 X25519，
+// 即可让服务端回 HRR（见 docs/TLS测试-用例执行步骤.md 的 TLS-1-8）。
+var kexByName = map[string]tls.CurveID{
+	"SM2Kyber512Draft00":     tls.SM2Kyber512Draft00,
+	"SM2Kyber768Draft00":     tls.SM2Kyber768Draft00,
+	"SM2Kyber1024Draft00":    tls.SM2Kyber1024Draft00,
+	"X25519Kyber512Draft00":  tls.X25519Kyber512Draft00,
+	"X25519Kyber768Draft00":  tls.X25519Kyber768Draft00,
+	"X25519Kyber1024Draft00": tls.X25519Kyber1024Draft00,
+	"X25519":                 tls.X25519,
+	"DummyKex":               tls.DummyKex,
+	// HQC（需 -tags pq_hqc 构建）；后两个别名与测试大纲 X25519HQC1/5 的写法对齐
+	"X25519HQC-128": tls.X25519HQC128,
+	"X25519HQC-256": tls.X25519HQC256,
+	"X25519HQC1":    tls.X25519HQC128,
+	"X25519HQC5":    tls.X25519HQC256,
+}
+
+// kexDisplayName 用于日志展示（别名统一取正式名）。
+var kexDisplayName = map[tls.CurveID]string{
+	tls.SM2Kyber512Draft00:     "SM2Kyber512Draft00",
+	tls.SM2Kyber768Draft00:     "SM2Kyber768Draft00",
+	tls.SM2Kyber1024Draft00:    "SM2Kyber1024Draft00",
+	tls.X25519Kyber512Draft00:  "X25519Kyber512Draft00",
+	tls.X25519Kyber768Draft00:  "X25519Kyber768Draft00",
+	tls.X25519Kyber1024Draft00: "X25519Kyber1024Draft00",
+	tls.X25519HQC128:           "X25519HQC-128",
+	tls.X25519HQC256:           "X25519HQC-256",
+	tls.DummyKex:               "DummyKex",
+	tls.X25519:                 "X25519",
+}
+
+const kexHelp = "SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber768Draft00、" +
+	"SM2Kyber768Draft00、X25519Kyber1024Draft00、SM2Kyber1024Draft00、" +
+	"X25519HQC-128、X25519HQC-256、DummyKex、X25519（可用逗号分隔多个，顺序即偏好）"
+
+// selectKEX 依据 -kex 参数选择启用哪些密钥交换组（支持逗号分隔的多组）。
 func selectKEX() []tls.CurveID {
 	if *kexFlag == "" {
 		return supportedKEX
 	}
-	byName := map[string]tls.CurveID{
-		"SM2Kyber512Draft00":     tls.SM2Kyber512Draft00,
-		"X25519Kyber512Draft00":  tls.X25519Kyber512Draft00,
-		"X25519Kyber1024Draft00": tls.X25519Kyber1024Draft00,
-		"SM2Kyber1024Draft00":    tls.SM2Kyber1024Draft00,
-		"X25519Kyber768Draft00":  tls.X25519Kyber768Draft00,
-		"X25519":                 tls.X25519,
-		// HQC（需 -tags pq_hqc 构建）；后两个别名与测试大纲 X25519HQC1/5 的写法对齐
-		"X25519HQC-128": tls.X25519HQC128,
-		"X25519HQC-256": tls.X25519HQC256,
-		"X25519HQC1":    tls.X25519HQC128,
-		"X25519HQC5":    tls.X25519HQC256,
+	var out []tls.CurveID
+	for _, name := range strings.Split(*kexFlag, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		id, ok := kexByName[name]
+		if !ok {
+			log.Fatalf("未知密钥交换组 %q；可选：%s", name, kexHelp)
+		}
+		if (id == tls.X25519HQC128 || id == tls.X25519HQC256) && !tls.HQCEnabled() {
+			log.Fatalf("HQC 组需要带 -tags pq_hqc 构建并链接 liboqs；当前构建不含 HQC")
+		}
+		out = append(out, id)
 	}
-	id, ok := byName[*kexFlag]
-	if !ok {
-		log.Fatalf("未知密钥交换组 %q；可选：SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber1024Draft00、SM2Kyber1024Draft00、X25519Kyber768Draft00、X25519HQC-128、X25519HQC-256、X25519", *kexFlag)
+	if len(out) == 0 {
+		log.Fatalf("-kex 未指定有效的密钥交换组")
 	}
-	if (id == tls.X25519HQC128 || id == tls.X25519HQC256) && !tls.HQCEnabled() {
-		log.Fatalf("HQC 组需要带 -tags pq_hqc 构建并链接 liboqs；当前构建不含 HQC")
+	return out
+}
+
+// kexNames 把 CurveID 列表转成可读名称，用于启动日志。
+func kexNames(ids []tls.CurveID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if n, ok := kexDisplayName[id]; ok {
+			out = append(out, n)
+		} else {
+			out = append(out, fmt.Sprintf("CurveID(%d)", uint16(id)))
+		}
 	}
-	return []tls.CurveID{id}
+	return out
 }
 
 func main() {
 	flag.Parse()
-	log.Printf("启用的密钥交换组: %v", selectKEX())
+	log.Printf("启用的密钥交换组: %v", kexNames(selectKEX()))
 	config := &tls.Config{
 		CurvePreferences: selectKEX(),
 		MinVersion:       tls.VersionTLS13,

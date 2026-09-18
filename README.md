@@ -41,7 +41,10 @@
 │   ├── TLS测试-用例执行步骤.md   20 条验收用例 + 混合拼接用例的逐条可执行命令
 │   ├── HQC-TLS-最小改造路线.md   TLS 侧接入 HQC 的最小改动方案
 │   └── assets/        TLS 握手流程 / 密钥材料 / 测试拓扑图
-├── tools/             测试辅助脚本（tls_hello_check.py：握手报文解析与长度断言）
+├── tools/             测试辅助工具
+│   ├── tls_hello_check.py      握手报文解析 + 混合拼接长度断言（RFC 9954）
+│   ├── tls_abnormal_hello.py   手工构造异常 ClientHello（版本/组）
+│   └── tlsbench/               握手耗时与并发压测（Go 模块）
 ├── patches/           Go 1.22.12 crypto/tls 抗量子补丁（可复现）
 └── dist/              交付二进制留档（linux_*/windows_*.exe，不进 git）
 ```

@@ -3,7 +3,9 @@
 > 覆盖 B.1 / B.2 / B.3 的 **TLS-1-1 ~ TLS-3-5** 共 20 条，外加新增用例
 > **「混合密钥拼接结构验证」**（依据 RFC 9954）。
 >
-> 标记说明：**✅ 当前环境即可执行** ／ **⚠️ 需先做一处小改动**（本文已写明改法与原因）。
+> 全部用例均已可用代码测量；每条都给出可直接复制执行的命令与实测结果。
+> 所需工具（`tools/tls_hello_check.py`、`tools/tls_abnormal_hello.py`、`tools/tlsbench`）
+> 与参数（`-kex` 多组、`-verify`、`-msg-hex`）已随仓库提供，见 §5。
 
 ---
 
@@ -40,12 +42,17 @@ export CGO_ENABLED=1
 export CGO_CFLAGS="-I$R/.build/liboqs/include"
 export CGO_LDFLAGS="-L$R/.build/liboqs/lib -loqs"
 cd $R/tls-hybrid/e2e && go build -tags pq_hqc -o $E2EH .
+
+# 性能测试工具（模块位于 tools/tlsbench/）
+cd $R/tools/tlsbench && go build -o $R/.build/tlsbench .
+go build -tags pq_hqc -o $R/.build/tlsbench_hqc .   # 需要压测 HQC 组时
 ```
 
 编译产物校验：
 
 ```sh
-$E2E -h 2>&1 | head -20      # 应列出 -cert/-key/-ca/-addr/-msg/-kex/-showkex
+$E2E -h 2>&1 | head -20            # 应列出 -cert/-key/-ca/-addr/-msg/-msg-hex/-kex/-verify/-showkex
+$R/.build/tlsbench -h 2>&1 | head -12
 ```
 
 ### 0.3 ⚠️ 证书：仓库自带的测试证书**已全部过期**
@@ -71,6 +78,10 @@ openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 3650 \
 openssl x509 -in server_root_cert1.pem -noout -dates -subject
 ```
 
+> 说明：客户端程序读取的 CA 文件默认为其工作目录下的 `server.crt`，可用 `-ca <文件>`
+> 覆盖；`e2e` 用 `-cert/-key/-ca` 三个参数分别指定服务端证书/私钥与信任的 CA。
+> 启用 `-verify` 时，服务端证书必须能由 `-ca` 指定的 CA 验证且未过期。
+
 ### 0.4 抓包与解析（TLS-1-4 / TLS-1-5 / 混合拼接用例）
 
 抓包需要 root 或 `CAP_NET_RAW`；解析脚本 `tools/tls_hello_check.py` 纯标准库、
@@ -87,6 +98,9 @@ python3 $R/tools/tls_hello_check.py /tmp/tls.pcap --expect X25519Kyber1024Draft0
 
 脚本会打印：ClientHello 的 `supported_versions` / `supported_groups` / 每个 `key_share`
 的组与长度、ServerHello 的选中组与 `key_share` 长度，并把长度与 RFC 9954 的拼接预期逐项对照。
+
+异常交互用例（TLS-1-7 / TLS-1-8）另有 `tools/tls_abnormal_hello.py`：手工构造异常
+ClientHello 并解析服务端响应，**纯标准库、不需要抓包与 root**，用法见对应用例。
 
 ---
 
@@ -237,8 +251,19 @@ cd $CERT && $E2E -cert server_root_cert1.pem -key server_root_key1.pem \
 **判定**：双方共同支持组中的最优者被选中（实测默认首选 `SM2Kyber512Draft00`）。
 用 `tools/tls_hello_check.py` 可同时看到"offer 6 组 / 选中第 1 个"的完整证据。
 
-> ⚠️ 若要验证"双方偏好不同时仍能协商成功"，需要 `-kex` 支持逗号分隔的多组列表
-> （见 §4 待补项 ①）；当前 `-kex` 只能指定单组。
+> **更严格的验证（双方偏好不同）**：`-kex` 支持逗号分隔的多组，顺序即偏好。
+>
+> ```sh
+> # 服务端偏好 [X25519, X25519Kyber1024Draft00]
+> cd $CERT && $E2E -cert server_root_cert1.pem -key server_root_key1.pem \
+>   -ca server_root_cert1.pem -kex X25519,X25519Kyber1024Draft00 -addr localhost:8099 &
+> # 客户端偏好 [X25519Kyber768Draft00, X25519]，与服务端的交集只有 X25519
+> cd $R/tls-hybrid/client && $CLI -kex X25519Kyber768Draft00,X25519
+> ```
+>
+> **实测**：客户端输出 `Used X25519`；服务端启动日志
+> `启用的密钥交换组: [X25519 X25519Kyber1024Draft00]`——即从"双方共同支持"的组中选出了
+> X25519（客户端首选的 Kyber768 服务端并不支持）。
 
 ---
 
@@ -273,75 +298,144 @@ tshark -r /tmp/tls.pcap -Y "tls.alert_message" -T fields \
 
 **判定**：连接被拒绝 + 告警描述为 `protocol_version`。
 
-> 若要"畸形版本字段"（而非合法但过低的版本），需一个手工构造 ClientHello 的小脚本
-> （Python `socket`+`struct` 即可，环境已具备）——见 §4 待补项 ③。
+> **严格版（畸形版本字段）**：用 `tools/tls_abnormal_hello.py` 构造
+> legacy_version=0x0300 且不带 supported_versions 的 ClientHello：
+>
+> ```sh
+> # 终端A 起服务端（只支持 X25519）
+> cd $R/tls-hybrid/server && $SRV -kex X25519
+> # 终端B
+> python3 $R/tools/tls_abnormal_hello.py --addr localhost:8080 --mode bad-version
+> python3 $R/tools/tls_abnormal_hello.py --addr localhost:8080 --mode tls12-only
+> ```
+>
+> **实测输出**：
+>
+> ```
+> 服务端响应: ALERT level=2 desc=70(protocol_version)
+> 判定: ✅ 通过（期望 alert:protocol_version，实际 alert:protocol_version）
+> ```
+>
+> 另有 `--mode no-common-group`（supported_groups 与服务端无交集）→ 实测
+> `ALERT level=2 desc=40(handshake_failure)`。
 
 ---
 
-### TLS-1-8 无效密钥交换组处理（HelloRetryRequest）⚠️
+### TLS-1-8 无效密钥交换组处理（HelloRetryRequest）✅
 
-**现状**：代码里已内置为 HRR 测试准备的 `DummyKex`（`cfkem.go` 中
-`DummyKex = CurveID(0xfe33)`，注释即写明 "servers will not support … so we can test
-HelloRetryRquest"），但当前 `-kex` 只接受单组，无法构造
-"key_share 放不支持的组、supported_groups 里保留 X25519" 这一触发条件。
+代码内置了专用于 HRR 测试的 `DummyKex`（`cfkem.go` 中 `DummyKex = CurveID(0xfe33)`，
+注释即写明 "servers will not support … so we can test HelloRetryRquest"）。
+现在 `-kex` 支持逗号分隔的多组，客户端可用 `DummyKex,X25519` 构造触发条件。
 
-**待补**（见 §4 待补项 ①）：让 `-kex` 支持逗号分隔，并把 `DummyKex` 加入名字表。补完后：
+**步骤1** 服务端（终端A）只支持 X25519：
 
 ```sh
-# 服务端只支持 X25519；客户端首选 DummyKex（服务端不支持）但 supported_groups 含 X25519
-cd $CERT && $E2E ... -kex X25519 -addr localhost:8099              # 服务端
-cd $CERT && $E2E ... -kex DummyKex,X25519 -addr localhost:8099     # 客户端
+cd $R/tls-hybrid/server && $SRV -kex X25519
 ```
 
-**期望结果**：抓包中出现两条 ServerHello，第一条是 HRR（`tls.handshake.random` ==
-`cf21ad74…8339c`），且带 `key_share_selected_group = 0x001d`；第二条为正常 ServerHello，
-最终协商 X25519。
+**步骤2** 客户端（终端B）首选 DummyKex，但 supported_groups 里保留 X25519：
 
 ```sh
+cd $R/tls-hybrid/client && $CLI -kex DummyKex,X25519
+```
+
+**步骤3** 抓包确认（终端C，见 §0.4）：
+
+```sh
+python3 $R/tools/tls_hello_check.py /tmp/tls.pcap
 tshark -r /tmp/tls.pcap -Y "tls.handshake.type == 2" -T fields \
   -e frame.number -e tls.handshake.random -e tls.handshake.extensions_key_share_selected_group
 ```
 
----
+**实测结果**：
 
-### TLS-1-9 证书有效性验证 ⚠️（**当前不通过，必须先改代码**）
-
-**现状**：`tls-hybrid/e2e/test.go:235` 为 `InsecureSkipVerify: true`，且手工校验
-`validateCertExpiry` 的调用在 `:293` **被注释掉**；`tls-hybrid/client/client.go` 同样
-`InsecureSkipVerify: true`，只在 `:191` 调 `validateCertExpiry`（仅能发现"过期/未生效"，
-发现不了"签名错误"）。因此**当前无法通过该用例**。
-
-**待补**（见 §4 待补项 ②）：给 `e2e`/`client` 增加 `-verify-cert` 开关，
-打开后使用 `RootCAs` 做标准校验（`InsecureSkipVerify=false`），并额外显式检查有效期。
-
-补完后执行：
-
-```sh
-# 1) 造一张过期证书
-cd /tmp && openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 \
-  -keyout expired.key -out expired.crt -subj "/CN=expired.example.com" \
-  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
-# 让 NotAfter 落在过去（openssl 3 支持 -not_before/-not_after；或用 faketime）
-openssl req -x509 -newkey rsa:2048 -nodes -sha256 \
-  -keyout expired.key -out expired.crt -subj "/CN=expired.example.com" \
-  -not_before 20240101000000Z -not_after 20240201000000Z \
-  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
-
-# 2) 用过期证书启动服务端，客户端开启校验
-cd $CERT && $E2E -cert /tmp/expired.crt -key /tmp/expired.key -ca /tmp/expired.crt \
-  -addr localhost:8099                                # 服务端
-cd $CERT && $E2E -verify-cert -ca /tmp/expired.crt -addr localhost:8099   # 客户端
+```
+supported_groups(2 个): 0xfe33 DummyKex、0x001d X25519
+CH key_share: 组=0xfe33(DummyKex) 长度=32
+【ServerHello】共 2 条（含 HRR）
+  #1 HelloRetryRequest    ← HRR（random == cf21ad74…8339c）
+  #2 ServerHello  key_share = 0x001d(X25519) 长度=32
+【结论】最终协商: 0x001d X25519   总判定: ✅ 全部通过
 ```
 
-**期望结果**：客户端拒绝，输出 `x509: certificate has expired or is not yet valid`
-（或本仓库的 `[安全] 证书验证失败: certificate has expired`），握手失败。
-
-> 另一条更省事的路径：把 §0.3 生成的**有效**证书当作"签名错误"的反例——
-> 用另一个 CA 签发的证书去启动服务端，客户端固定 `-ca` 指向正确的 CA，即可验证"签名错误被拒"。
+客户端日志为 `Used X25519`（HRR 后按服务端要求重发 key_share 并完成握手）。
+**另一条不需要真实客户端的路径**：`python3 $R/tools/tls_abnormal_hello.py --mode unknown-group`
+→ 实测直接收到 `HelloRetryRequest ... key_share_group=0x001d`。
 
 ---
 
-### TLS-1-10 加密通信验证 ✅（文本）／⚠️（二进制）
+### TLS-1-9 证书有效性验证 ✅
+
+`e2e` 与 `client` 都支持 `-verify`：打开后 `InsecureSkipVerify=false`（标准链校验）
+并额外显式校验对端证书有效期；`client` 另可用 `-ca` 指定信任的 CA 文件。
+
+**步骤1** 准备证书：
+
+```sh
+mkdir -p $R/.build/certs && cd $R/.build/certs
+# 有效证书（服务端用，同时作为客户端信任的 CA）
+openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 365 \
+  -keyout fresh.key -out fresh.crt -subj "/C=CN/O=Test/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+# "另一个 CA"，用于制造"签名错误 / 不受信任"场景
+openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 365 \
+  -keyout other.key -out other.crt -subj "/C=CN/O=Other/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+```
+
+**步骤2（过期证书应被拒绝）** 用仓库里已过期的证书启动服务端：
+
+```sh
+cd $CERT && $E2E -cert server_root_cert1.pem -key server_root_key1.pem \
+  -ca server_root_cert1.pem -verify -addr localhost:8211
+```
+
+**实测输出**：
+
+```
+请求失败: ... tls: failed to verify certificate:
+x509: certificate has expired or is not yet valid: current time 2026-09-18T15:03:14+08:00
+is after 2026-04-15T05:31:01Z
+```
+
+**步骤3（签名错误/CA 不匹配应被拒绝）**：
+
+```sh
+cd $CERT && $E2E -cert $R/.build/certs/fresh.crt -key $R/.build/certs/fresh.key \
+  -ca $R/.build/certs/other.crt -verify -addr localhost:8232
+```
+
+**实测输出**：
+
+```
+请求失败: ... tls: failed to verify certificate: x509: certificate signed by unknown authority
+```
+
+**步骤4（有效证书应通过）**：
+
+```sh
+cd $CERT && $E2E -cert $R/.build/certs/fresh.crt -key $R/.build/certs/fresh.key \
+  -ca $R/.build/certs/fresh.crt -verify -addr localhost:8231
+```
+
+**实测输出**：
+
+```
+🔐 证书校验通过（-verify）
+🔒 服务器接收到: Secret quantum-safe message
+📩 服务器响应: 量子安全响应: Secret quantum-safe message
+✅ 客户端和服务器交互完成。
+```
+
+> 两进程路径同理：把新证书放到 `tls-hybrid/server/`
+> （文件名固定为 `server_root_cert1.pem` / `server_root_key1.pem`）后在该目录启动服务端；
+> 客户端 `cd $R/tls-hybrid/client && $CLI -kex X25519Kyber1024Draft00 -verify -ca <新证书>`。
+> 实测：有效证书通过（3.1ms）；`-ca` 指向错误证书则报
+> `x509: certificate signed by unknown authority`。
+
+---
+
+### TLS-1-10 加密通信验证 ✅（文本与二进制）
 
 文本数据：
 
@@ -353,10 +447,19 @@ cd $CERT && $E2E -cert server_root_cert1.pem -key server_root_key1.pem \
 **期望**：`🔒 服务器接收到: 测试文本数据 test text 123` 且 `📩 服务器响应: …`，
 说明应用层数据经 `ExportKeyingMaterial` 导出的密钥 + AES-GCM 正确加解密。
 
-二进制数据：需要新增 `-msg-hex` 参数（见 §4 待补项 ④）；补完后：
+二进制数据（`-msg-hex`，十六进制输入）：
 
 ```sh
-cd $CERT && $E2E ... -msg-hex 00ff1020304050607f80 -addr localhost:8099
+cd $CERT && $E2E -cert $R/.build/certs/fresh.crt -key $R/.build/certs/fresh.key \
+  -ca $R/.build/certs/fresh.crt -msg-hex 00ff1020304050607080 -addr localhost:8231
+```
+
+**实测输出**：
+
+```
+🔒 服务器接收到: (二进制 10 字节) 00ff1020304050607080
+📩 服务器响应: 量子安全响应: <10 字节原始数据回显>     ← 客户端成功解密
+⏱️ 总执行时间: 5.856882ms
 ```
 
 ---
@@ -365,45 +468,66 @@ cd $CERT && $E2E ... -msg-hex 00ff1020304050607f80 -addr localhost:8099
 
 ### TLS-2-1 / TLS-2-2 / TLS-2-3 单连接建立耗时 ✅
 
-用 100 次循环取平均（客户端日志中的 `代码执行时间` 不含进程启动开销，可直接统计）：
+推荐用 `tools/tlsbench`（进程内 `tls.Dial` 计时，**只算握手**，不含进程启动与 HTTP 开销）：
 
 ```sh
-cd $CERT
+# 终端A：压测服务端（用仓库自带的证书即可，压测客户端默认不校验证书）
+cd $R/tls-hybrid/server
+$R/.build/tlsbench -mode server -addr :8099 \
+  -cert server_root_cert1.pem -key server_root_key1.pem -kex X25519Kyber1024Draft00 &
+
+# 终端B：逐组重复 200 次单连接，输出 均值/最小/最大/P50/P90/P95/P99
 for KEX in SM2Kyber512Draft00 X25519Kyber512Draft00 X25519Kyber1024Draft00; do
   echo "===== $KEX ====="
-  # 终端A 起服务端
-  $E2E -cert server_root_cert1.pem -key server_root_key1.pem -ca server_root_cert1.pem \
-       -kex $KEX -addr localhost:8099 >/dev/null 2>&1 &
-  SRVPID=$!; sleep 1
-  # 终端B 侧：用两进程客户端循环 100 次（更接近"重复建立单连接"的表述）
-  ( cd $R/tls-hybrid/client
-    for i in $(seq 1 100); do $CLI -kex $KEX; done ) 2>&1 \
-    | awk '/代码执行时间/{gsub(/[^0-9.]/,"",$2); s+=$2; n++; if($2>mx)mx=$2; if(mn==""||$2<mn)mn=$2}
-           END{printf "样本=%d 平均=%.3fms 最小=%.3fms 最大=%.3fms\n", n, s/n, mn, mx}'
-  kill $SRVPID 2>/dev/null
+  $R/.build/tlsbench -mode client -addr localhost:8099 -kex $KEX -n 200
 done
+
+# HQC 组（用带 pq_hqc 的版本；服务端也要换成 tlsbench_hqc）
+$R/.build/tlsbench_hqc -mode client -addr localhost:8099 -kex X25519HQC-128 -n 100
+$R/.build/tlsbench_hqc -mode client -addr localhost:8099 -kex X25519HQC-256 -n 50
 ```
 
-**期望结果**：每次连接均成功，输出形如
-`样本=100 平均=4.2ms 最小=3.1ms 最大=12.7ms`。
+**实测结果**（本机，单位 ms）：
 
-> ⚠️ 该测法把两次 HTTP 请求也计入；若要**纯握手耗时**，建议加 `tools/tlsbench`
-> （进程内 `tls.Dial` 计时，输出 P50/P95）——见 §4 待补项 ⑤。
+| 组 | 平均 | 最小 | 最大 | P50 | P95 | P99 |
+|---|---|---|---|---|---|---|
+| `SM2Kyber512Draft00` | 4.922 | 4.572 | 6.061 | 4.865 | 5.421 | 5.839 |
+| `X25519Kyber512Draft00` | 1.964 | 1.813 | 2.770 | 1.935 | 2.189 | 2.691 |
+| `X25519Kyber1024Draft00` | 2.048 | 1.891 | 3.147 | 2.014 | 2.272 | 2.567 |
+| `X25519HQC-128` | 8.100 | 7.710 | 8.962 | 7.961 | 8.779 | 8.962 |
+| `X25519HQC-256` | 35.559 | 34.757 | 40.763 | 35.363 | 36.902 | 40.763 |
+
+> 备选（不新增工具）：两进程客户端循环若干次，统计日志里的 `代码执行时间`
+> （不含进程启动开销，但含两次 HTTP 请求）：
+>
+> ```sh
+> ( cd $R/tls-hybrid/client; for i in $(seq 1 100); do $CLI -kex X25519Kyber1024Draft00; done ) 2>&1 \
+>   | awk '/代码执行时间/{gsub(/[^0-9.]/,"",$2); s+=$2; n++} END{printf "样本=%d 平均=%.3fms\n", n, s/n}'
+> ```
 
 ---
 
-### TLS-2-4 并发多个 TLS 连接建立耗时 ⚠️
-
-**现状**：`hey` / `wrk` / `ab` 均未安装。见 §4 待补项 ⑤（推荐自写 `tools/tlsbench -c N`，
-不引入外部依赖）。补完后：
+### TLS-2-4 并发多个 TLS 连接建立耗时 ✅
 
 ```sh
-# 先起服务端
-cd $CERT && $E2E -cert server_root_cert1.pem -key server_root_key1.pem \
-  -ca server_root_cert1.pem -kex X25519Kyber1024Draft00 -addr localhost:8099 &
-# 并发 50、共 1000 次连接，统计成功率和平均耗时
-$R/.build/tlsbench -addr localhost:8099 -kex X25519Kyber1024Draft00 -c 50 -n 1000
+# 终端A：压测服务端
+cd $R/tls-hybrid/server
+$R/.build/tlsbench -mode server -addr :8099 \
+  -cert server_root_cert1.pem -key server_root_key1.pem -kex X25519Kyber1024Draft00 &
+
+# 终端B：并发 50、共 1000 次连接
+$R/.build/tlsbench -mode client -addr localhost:8099 -kex X25519Kyber1024Draft00 -c 50 -n 1000
 ```
+
+**实测结果**：
+
+```
+成功 1000 / 失败 0，总墙钟耗时 385ms（2594.3 连接/秒）
+握手耗时: 平均=18.906ms 最小=2.945ms 最大=67.171ms P50=18.075ms P90=36.273ms P95=44.968ms P99=60.381ms
+```
+
+成功率 100%。并发连接建立能力的采样口径：并发数 `-c`、总次数 `-n` 可按需调整
+（例如 `-c 100 -n 5000`）。
 
 ---
 
@@ -559,13 +683,24 @@ python3 $R/tools/tls_hello_check.py /tmp/tls_hybrid.pcap --expect X25519Kyber102
 
 ---
 
-## 5. 待补项（让 ⚠️ 用例变为 ✅）
+## 5. 补充的工具与参数（本次已全部实现并实测）
 
-| # | 补什么 | 影响的用例 | 预估 |
+| # | 内容 | 覆盖用例 | 状态 |
 |---|---|---|---|
-| ① | `-kex` 支持逗号分隔多组 + 把 `DummyKex` 加进名字表 | TLS-1-6（严格版）、TLS-1-8 | ~20 行 |
-| ② | `e2e`/`client` 增加 `-verify-cert`（`InsecureSkipVerify=false` + RootCAs + 显式有效期检查） | TLS-1-9 | ~15 行 |
-| ③ | 手工构造异常 ClientHello 的小脚本（畸形版本号 / 未知组） | TLS-1-7（严格版）、TLS-1-8（替代路线） | ~80 行 |
-| ④ | `-msg-hex` 支持二进制应用数据 | TLS-1-10（二进制） | ~10 行 |
-| ⑤ | `tools/tlsbench`：进程内 N 次握手计时（均值/P50/P95）+ 并发模式 | TLS-2-1~2-4 | ~120 行 |
-| ⑥ | 服务端启动日志把 `CurveID(65078)` 打印成组名（当前是数字，仅影响观感） | 全部握手用例的服务端侧日志 | ~5 行 |
+| ① | `-kex` 支持逗号分隔多组（顺序即偏好）+ `DummyKex` 加入名字表（server/client/e2e） | TLS-1-6（严格版）、TLS-1-8 | ✅ 已实测 |
+| ② | `e2e`/`client` 新增 `-verify`（标准链校验 + 显式有效期检查）；`client` 新增 `-ca` | TLS-1-9 | ✅ 已实测（过期/错签被拒、有效通过） |
+| ③ | `tools/tls_abnormal_hello.py`：bad-version / tls12-only / unknown-group / no-common-group | TLS-1-7（严格版）、TLS-1-8 | ✅ 四种模式已实测 |
+| ④ | `-msg-hex` 支持二进制应用数据 | TLS-1-10（二进制） | ✅ 已实测 |
+| ⑤ | `tools/tlsbench`：进程内 N 次握手计时（均值/最小/最大/P50/P90/P95/P99）+ 并发模式 + HQC | TLS-2-1 ~ TLS-2-4 | ✅ 已实测 |
+| ⑥ | 服务端启动日志打印组名（原为 `CurveID(65078)`） | 全部握手用例的服务端侧日志 | ✅ 已实测 |
+
+**兼容性说明**：`-verify` 默认关闭、`-kex` 不带参数时启用全部组——与补充前的行为一致，
+原有测试命令不受影响。
+
+**工具清单**
+
+| 文件 | 用途 |
+|---|---|
+| `tools/tls_hello_check.py` | 解析 pcap/pcapng，输出 ClientHello/ServerHello 字段并断言混合拼接长度（RFC 9954） |
+| `tools/tls_abnormal_hello.py` | 手工构造异常 ClientHello（版本/组），解析服务端告警或 HRR |
+| `tools/tlsbench/` | 握手耗时与并发压测（Go 模块，需用打补丁的 GOROOT 编译） |

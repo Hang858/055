@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync" // Import sync for WaitGroup
 	"time"
 )
@@ -33,7 +35,9 @@ var (
 	caCertFile  string
 	serverAddr  string
 	postMessage string
+	msgHex      string
 	showKex     bool
+	verifyCert  bool
 	kexName     string
 )
 
@@ -42,9 +46,11 @@ func init() {
 	flag.StringVar(&keyFile, "key", "/Users/zhaohaitian/Desktop/新近期工作/证书_TLS协议实现/tlsv1/tls/server_client/server_root_key.pem", "服务器私钥文件")
 	flag.StringVar(&caCertFile, "ca", "/Users/zhaohaitian/Desktop/新近期工作/证书_TLS协议实现/tlsv1/tls/server_client/server_root_cert1.pem", "CA 证书文件 (客户端使用)")
 	flag.StringVar(&serverAddr, "addr", "localhost:8080", "服务器地址")
-	flag.StringVar(&postMessage, "msg", "Secret quantum-safe message", "客户端发送的消息")
+	flag.StringVar(&postMessage, "msg", "Secret quantum-safe message", "客户端发送的消息（文本）")
+	flag.StringVar(&msgHex, "msg-hex", "", "客户端发送的消息（十六进制，用于二进制数据；优先于 -msg）")
 	flag.BoolVar(&showKex, "showkex", true, "显示协商的密钥交换算法")
-	flag.StringVar(&kexName, "kex", "", "只启用指定的密钥交换组（默认启用全部）")
+	flag.BoolVar(&verifyCert, "verify", false, "客户端启用标准证书链校验（默认关闭，便于自测）")
+	flag.StringVar(&kexName, "kex", "", "启用的密钥交换组，可用逗号分隔多个（默认启用全部）")
 }
 
 // supportedKEX 是源码库支持的混合密钥交换组，按量子安全等级标注。
@@ -66,32 +72,62 @@ var supportedKEX = func() []tls.CurveID {
 	return append(list, tls.X25519) // 传统算法，用于兼容性回退
 }()
 
-// selectKEX 依据 -kex 参数选择启用哪些密钥交换组。
+// selectKEX 依据 -kex 参数选择启用哪些密钥交换组（支持逗号分隔的多组，顺序即偏好）。
 func selectKEX() []tls.CurveID {
 	if kexName == "" {
 		return supportedKEX
 	}
-	byName := map[string]tls.CurveID{
-		"SM2Kyber512Draft00":     tls.SM2Kyber512Draft00,
-		"X25519Kyber512Draft00":  tls.X25519Kyber512Draft00,
-		"X25519Kyber1024Draft00": tls.X25519Kyber1024Draft00,
-		"SM2Kyber1024Draft00":    tls.SM2Kyber1024Draft00,
-		"X25519Kyber768Draft00":  tls.X25519Kyber768Draft00,
-		"X25519":                 tls.X25519,
-		// HQC（需 -tags pq_hqc 构建）；后两个别名与测试大纲 X25519HQC1/5 的写法对齐
-		"X25519HQC-128": tls.X25519HQC128,
-		"X25519HQC-256": tls.X25519HQC256,
-		"X25519HQC1":    tls.X25519HQC128,
-		"X25519HQC5":    tls.X25519HQC256,
+	var out []tls.CurveID
+	for _, name := range strings.Split(kexName, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		id, ok := kexByName[name]
+		if !ok {
+			log.Fatalf("未知密钥交换组 %q；可选：%s", name, kexHelp)
+		}
+		if (id == tls.X25519HQC128 || id == tls.X25519HQC256) && !tls.HQCEnabled() {
+			log.Fatalf("HQC 组需要带 -tags pq_hqc 构建并链接 liboqs；当前构建不含 HQC")
+		}
+		out = append(out, id)
 	}
-	id, ok := byName[kexName]
-	if !ok {
-		log.Fatalf("未知密钥交换组 %q；可选：SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber1024Draft00、SM2Kyber1024Draft00、X25519Kyber768Draft00、X25519HQC-128、X25519HQC-256、X25519", kexName)
+	if len(out) == 0 {
+		log.Fatalf("-kex 未指定有效的密钥交换组")
 	}
-	if (id == tls.X25519HQC128 || id == tls.X25519HQC256) && !tls.HQCEnabled() {
-		log.Fatalf("HQC 组需要带 -tags pq_hqc 构建并链接 liboqs；当前构建不含 HQC")
+	return out
+}
+
+// kexByName 组名 → CurveID。DummyKex(0xfe33) 是预留给 HelloRetryRequest 测试的
+// “服务端不会支持”的组，见 docs/TLS测试-用例执行步骤.md 的 TLS-1-8。
+var kexByName = map[string]tls.CurveID{
+	"SM2Kyber512Draft00":     tls.SM2Kyber512Draft00,
+	"SM2Kyber768Draft00":     tls.SM2Kyber768Draft00,
+	"SM2Kyber1024Draft00":    tls.SM2Kyber1024Draft00,
+	"X25519Kyber512Draft00":  tls.X25519Kyber512Draft00,
+	"X25519Kyber768Draft00":  tls.X25519Kyber768Draft00,
+	"X25519Kyber1024Draft00": tls.X25519Kyber1024Draft00,
+	"X25519":                 tls.X25519,
+	"DummyKex":               tls.DummyKex,
+	// HQC（需 -tags pq_hqc 构建）；后两个别名与测试大纲 X25519HQC1/5 的写法对齐
+	"X25519HQC-128": tls.X25519HQC128,
+	"X25519HQC-256": tls.X25519HQC256,
+	"X25519HQC1":    tls.X25519HQC128,
+	"X25519HQC5":    tls.X25519HQC256,
+}
+
+const kexHelp = "SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber768Draft00、" +
+	"SM2Kyber768Draft00、X25519Kyber1024Draft00、SM2Kyber1024Draft00、" +
+	"X25519HQC-128、X25519HQC-256、DummyKex、X25519（可用逗号分隔多个，顺序即偏好）"
+
+// displayBytes 便于日志展示：可打印文本直接输出，二进制转十六进制。
+func displayBytes(b []byte) string {
+	for _, c := range b {
+		if c < 0x20 || c > 0x7e {
+			return fmt.Sprintf("(二进制 %d 字节) %x", len(b), b)
+		}
 	}
-	return []tls.CurveID{id}
+	return string(b)
 }
 
 func encrypt(key []byte, plaintext []byte) ([]byte, error) {
@@ -168,7 +204,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		log.Printf("🔒 服务器接收到: %s\n", plaintext)
+		log.Printf("🔒 服务器接收到: %s\n", displayBytes(plaintext))
 
 		// 加密响应
 		response := []byte("量子安全响应: " + string(plaintext))
@@ -232,7 +268,7 @@ func runClient(wg *sync.WaitGroup) {
 	}
 
 	config := &tls.Config{
-		InsecureSkipVerify: true, // 核心改动：跳过服务器证书验证
+		InsecureSkipVerify: !verifyCert, // 默认跳过证书验证；-verify 打开标准校验
 		RootCAs:            caCertPool,
 		CurvePreferences:   selectKEX(),
 		MinVersion:         tls.VersionTLS13,
@@ -288,11 +324,13 @@ func runClient(wg *sync.WaitGroup) {
 		log.Fatal("无 TLS 连接信息")
 	}
 
-	//// 验证证书有效期
-	//certs := resp.TLS.PeerCertificates
-	//if err := validateCertExpiry(certs); err != nil {
-	//	log.Fatalf("[安全] 证书验证失败: %v", err)
-	//}
+	// -verify 时额外显式校验对端证书有效期（标准链校验已由 InsecureSkipVerify=false 完成）
+	if verifyCert {
+		if err := validateCertExpiry(resp.TLS.PeerCertificates); err != nil {
+			log.Fatalf("[安全] 证书验证失败: %v", err)
+		}
+		log.Printf("🔐 证书校验通过（-verify）")
+	}
 
 	io.Copy(io.Discard, resp.Body)
 
@@ -302,8 +340,15 @@ func runClient(wg *sync.WaitGroup) {
 		log.Fatalf("密钥导出失败: %v", err)
 	}
 
-	// 加密要发送的数据
+	// 加密要发送的数据：-msg-hex 优先（用于二进制数据）
 	plaintext := []byte(postMessage)
+	if msgHex != "" {
+		decoded, err := hex.DecodeString(strings.ReplaceAll(strings.TrimSpace(msgHex), " ", ""))
+		if err != nil {
+			log.Fatalf("-msg-hex 不是合法十六进制: %v", err)
+		}
+		plaintext = decoded
+	}
 	ciphertext, err := encrypt(keyMaterial, plaintext)
 	if err != nil {
 		log.Fatalf("加密失败: %v", err)

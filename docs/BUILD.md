@@ -94,6 +94,25 @@ go build -o /tmp/e2e .
 # 输出：🔑 使用密钥交换算法: X25519Kyber1024Draft00 (混合后量子, 256 比特量子安全等级)
 ```
 
+### 示例程序的参数
+
+| 参数 | 适用 | 说明 |
+|---|---|---|
+| `-kex A,B,C` | e2e / server / client | 启用的密钥交换组，逗号分隔（顺序即偏好，默认全部）。支持 `DummyKex` 用于触发 HelloRetryRequest |
+| `-verify` | e2e / client | 客户端启用标准证书链校验（默认关闭以便自测） |
+| `-ca <文件>` | e2e / client | 信任的 CA 文件（client 默认为工作目录下的 `server.crt`） |
+| `-msg` / `-msg-hex` | e2e | 客户端发送的文本 / 十六进制二进制数据 |
+| `-cert` `-key` `-addr` `-showkex` | e2e | 服务端证书、私钥、监听地址、是否打印协商结果 |
+
+性能测试工具（`tools/tlsbench`，需用打补丁的 GOROOT 编译）：
+
+```sh
+cd tools/tlsbench && go build -o ../../.build/tlsbench .
+../../.build/tlsbench -mode server -addr :8099 -cert <证书> -key <私钥> -kex X25519Kyber1024Draft00 &
+../../.build/tlsbench -mode client -addr localhost:8099 -kex X25519Kyber1024Draft00 -n 200
+../../.build/tlsbench -mode client -addr localhost:8099 -kex X25519Kyber1024Draft00 -c 50 -n 1000
+```
+
 ---
 
 ## C. 构建抗量子证书生成工具（pqcert）
