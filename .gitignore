@@ -44,3 +44,7 @@ coverage.out
 
 # ---------- 本地构建工作区（Linux 版补丁工具链等）----------
 /.build/
+
+# Python 缓存
+__pycache__/
+*.pyc
