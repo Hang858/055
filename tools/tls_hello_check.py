@@ -38,6 +38,7 @@ RFC 9954《Hybrid Key Exchange in TLS 1.3》：
 
 import argparse
 import json
+import re
 import struct
 import sys
 from collections import OrderedDict
@@ -65,6 +66,35 @@ GROUPS = {
 }
 
 HANDSHAKE_TYPE = {1: "ClientHello", 2: "ServerHello"}
+
+# --expect 的写法容错：测试人员常写成 HQC-128 / Kyber1024 等简称，这里统一归一化到 GROUPS 中的规范名。
+_EXPECT_ALIASES = {
+    "hqc128": "X25519HQC-128",
+    "x25519hqc128": "X25519HQC-128",
+    "hqc256": "X25519HQC-256",
+    "x25519hqc256": "X25519HQC-256",
+    "kyber512": "X25519Kyber512Draft00",
+    "kyber768": "X25519Kyber768Draft00",
+    "kyber1024": "X25519Kyber1024Draft00",
+    "x25519": "X25519",
+    "sm2kyber512": "SM2Kyber512Draft00",
+    "sm2kyber1024": "SM2Kyber1024Draft00",
+    "mlkem768": "X25519MLKEM768",
+    "x25519mlkem768": "X25519MLKEM768",
+    "dummykex": "DummyKex",
+}
+
+
+def canon_group(name):
+    """把 --expect 传入的写法归一化到规范组名（找不到就原样返回）。"""
+    key = re.sub(r"[^a-z0-9]", "", name.lower())
+    if key in _EXPECT_ALIASES:
+        return _EXPECT_ALIASES[key]
+    for canonical in (v[0] for v in GROUPS.values()):
+        if re.sub(r"[^a-z0-9]", "", canonical.lower()) == key:
+            return canonical
+    return name
+
 HRR_RANDOM = bytes.fromhex(
     "cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c"
 )
@@ -393,9 +423,11 @@ def main():
     ap.add_argument("pcap", help="pcap 文件（tcpdump/tshark -w 输出）")
     ap.add_argument("--port", type=int, default=None, help="只分析该 TCP 端口")
     ap.add_argument("--expect", default=None,
-                    help="断言最终协商的组名（如 X25519Kyber1024Draft00）")
+                    help="断言最终协商的组名（如 X25519Kyber1024Draft00；也接受 HQC-128/HQC-256 等简称）")
     ap.add_argument("--json", default=None, help="把结构化结果写入 JSON 文件")
     args = ap.parse_args()
+    if args.expect:
+        args.expect = canon_group(args.expect)
 
     r = analyze(args.pcap, args.port)
     ch, sh = r["client_hello"], r["server_hello"]
