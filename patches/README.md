@@ -54,7 +54,7 @@ GOROOT_BOOTSTRAP=/usr/lib/go-1.22 ./src/make.bash
 | 混合密钥交换（**256 比特**） | **`X25519Kyber1024Draft00`(0xfe36)、`SM2Kyber1024Draft00`(0xfe37)** | 本次新增。X25519 配对由 `hybrid.Kyber1024X25519()` 提供（CIRCL 原本只有 Kyber1024-X448 / Kyber1024-sm2） |
 | 其他 | `X25519MLKEM768`(0x11ec) | 只定义了码点，示例未启用 |
 | 签名 | `Ed25519+Dilithium2/3`（`EdDilithium2/3`） | 需 `Config.PQSignatureSchemesEnabled = true`，默认关闭 |
-| **未支持** | **HQC（任意参数集）** | CIRCL 不提供 HQC；接入路线见 `../docs/HQC-TLS-最小改造路线.md` |
+| **HQC（可选编译）** | **`X25519HQC-128`(0xfe38)、`X25519HQC-256`(0xfe39)** | CIRCL 不含 HQC，适配器走 cgo 调 liboqs；需 `-tags pq_hqc` 构建，默认构建下不可用。见 `../docs/HQC-TLS-最小改造路线.md` |
 
 `tls-hybrid` 的客户端与服务端都支持 `-kex` 参数只启用某一组，便于逐组测试：
 
@@ -62,6 +62,8 @@ GOROOT_BOOTSTRAP=/usr/lib/go-1.22 ./src/make.bash
 ./e2e -kex X25519Kyber1024Draft00   # 256 比特
 ./e2e -kex X25519Kyber512Draft00    # 128 比特
 ./e2e -kex SM2Kyber512Draft00       # 国密 128 比特
+./e2e -kex X25519HQC-128            # 128 比特（需 -tags pq_hqc 构建）
+./e2e -kex X25519HQC-256            # 256 比特（需 -tags pq_hqc 构建）
 ```
 
 ## 遗留（未纳入补丁）

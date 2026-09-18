@@ -51,9 +51,9 @@
 | 组件 | 抗量子能力 | 构建状态 |
 |---|---|---|
 | `tls-hybrid/` | 混合密钥交换按量子安全等级覆盖 **128 / 192 / 256 比特**：`SM2Kyber512Draft00`、`X25519Kyber512Draft00`（128）；`X25519Kyber768Draft00`、`SM2Kyber768Draft00`、`X25519Kyber768Draft00Old`、`P256Kyber768Draft00`（192）；**`X25519Kyber1024Draft00`、`SM2Kyber1024Draft00`（256）**；保留 `X25519` 回退 | 需 `patches/` 里打补丁的 Go 1.22.12 ✅（已实测 6 组握手） |
+| **HQC（TLS）** | **`X25519HQC-128`（128 比特）、`X25519HQC-256`（256 比特）**，HQC 由 liboqs 提供，混合构造与 Kyber 组一致 | ✅ 已实测握手+加密通信；需 `-tags pq_hqc` 构建（cgo+liboqs），默认构建不含 HQC |
 | `pqcert/` | 签名（格）**ML-DSA-44/Dilithium2（128）、ML-DSA-65/Dilithium3（192）、ML-DSA-87/Dilithium5（256）**；签名（哈希）**SLH-DSA-SHA2-128s/128f、192s/192f、256s/256f**；KEM **Kyber-512、Kyber-768、Kyber-1024** | 用 Go 1.25+ 可直接编译运行 ✅（三个工具均实跑通过） |
 | `pqtls-1.3/` | `internal/crypto/mytls` fork 内实现 X25519+Kyber768 混合 | ⚠️ 入口引用了未定义符号，编译不过，见下 |
-| HQC | **未实现**（只有两行注释 `//NextProtos: []string{"pq-HQC-128"}`） | ❌ 改造路线见 [`docs/HQC-TLS-最小改造路线.md`](docs/HQC-TLS-最小改造路线.md) |
 
 ---
 
@@ -73,6 +73,14 @@ cd tls-hybrid/e2e && go build -o /tmp/e2e .
 /tmp/e2e -cert server_root_cert.pem -key server_root_key.pem \
          -ca server_root_cert1.pem -kex X25519Kyber1024Draft00 -addr localhost:8099
 
+# TLS + HQC（需先编 liboqs，见 docs/HQC-TLS-最小改造路线.md）
+export CGO_ENABLED=1 CGO_CFLAGS="-I.build/liboqs/include" \
+       CGO_LDFLAGS="-L.build/liboqs/lib -loqs"
+go build -tags pq_hqc -o /tmp/e2e_hqc .
+/tmp/e2e_hqc -cert server_root_cert.pem -key server_root_key.pem \
+             -ca server_root_cert1.pem -kex X25519HQC-256 -addr localhost:8095
+# → 🔑 使用密钥交换算法: X25519HQC-256 (混合后量子, 256 比特量子安全等级)
+
 # 证书工具全部可编译可运行
 cd pqcert/pure-pq && go build .         # 五条链（含 ML-DSA-87、SLH-DSA-256s）验签全部通过
 cd pqcert/sm2 && go build .             # 含 256 比特链（ML-DSA-87+Kyber-1024、SLH-DSA-256 双重签名）
@@ -89,9 +97,10 @@ cd pqcert/gen-sm2-chain && go run .     # 输出至 pqcert/certs-sample/
    `tls.ProtocolType` 与 `tls.QuantumSupportAKEX`，这两个符号在任何可用 Go 中都不存在；
    而真正实现 Kyber 混合的 `internal/crypto/mytls` 未被任何入口调用
    （`pqtls-1.3/server/client.go` 的 `runClient()` 无调用点）。
-2. **HQC 未接入**：CIRCL 不提供 HQC，只能引入 liboqs。最小改造路线（适配器要实现的
-   13 个 `kem.Scheme` 方法、build tag 方案、平台构建与风险）见
-   [`docs/HQC-TLS-最小改造路线.md`](docs/HQC-TLS-最小改造路线.md)。
+2. **HQC 需要 cgo**：HQC 已实现（`X25519HQC-128/256`），但带 `-tags pq_hqc` 构建时需要
+   cgo + liboqs，因此 Windows 的 HQC 产物要在 Windows/mingw 下构建；默认构建不含 HQC
+   （可 `CGO_ENABLED=0` 交叉编译），测试大纲的跨平台编译要求仍满足。
+   详见 [`docs/HQC-TLS-最小改造路线.md`](docs/HQC-TLS-最小改造路线.md)。
 3. **`internal/crypto/mytls` 有 5 份副本**：`pqtls-1.3/{server,client}` 与
    `pqcert/{pure-pq,sm2,x509-multi}` 各一份（后三者已删除 `internal/`，因证书工具并不依赖它）。
    当前 `pqtls-1.3` 两份内容 165/167 文件相同，暂未合并去重。
@@ -103,7 +112,8 @@ cd pqcert/gen-sm2-chain && go run .     # 输出至 pqcert/certs-sample/
 
 - 提交历史：`baseline`（整理前完整快照，便于回溯）→ `整理`（重命名/归档/清理）
   → `工程化文件`（README/.gitignore/补丁）→ `安全等级修正`（Kyber-1024 + ML-DSA-87）
-  → `SLH-DSA 等级补全`（192s/192f/256s/256f）→ `sm2 工具补 SLH-DSA`。
+  → `SLH-DSA 等级补全`（192s/192f/256s/256f）→ `sm2 工具补 SLH-DSA`
+  → `TLS 接入 HQC`（X25519HQC-128/256，可选编译）。
 - 以下内容**不入库**（见 `.gitignore`）：
   - `go1.22.12/`（266M macOS 工具链，用 `patches/` 重建）
   - `dist/`（交付二进制，可重新编译）

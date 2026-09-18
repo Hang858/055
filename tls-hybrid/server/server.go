@@ -90,14 +90,23 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 
 // 支持的混合密钥交换组（按量子安全等级标注）
-var supportedKEX = []tls.CurveID{
-	tls.SM2Kyber512Draft00,     // 128 比特量子安全等级
-	tls.X25519Kyber512Draft00,  // 128 比特量子安全等级
-	tls.X25519Kyber1024Draft00, // 256 比特量子安全等级
-	tls.SM2Kyber1024Draft00,    // 256 比特量子安全等级
-	tls.X25519Kyber768Draft00,  // 192 比特
-	tls.X25519,                 // 传统算法，用于兼容性回退
-}
+// HQC 组只在带 -tags pq_hqc 构建（并链接 liboqs）时可用。
+var supportedKEX = func() []tls.CurveID {
+	list := []tls.CurveID{
+		tls.SM2Kyber512Draft00,     // 128 比特量子安全等级
+		tls.X25519Kyber512Draft00,  // 128 比特量子安全等级
+		tls.X25519Kyber1024Draft00, // 256 比特量子安全等级
+		tls.SM2Kyber1024Draft00,    // 256 比特量子安全等级
+		tls.X25519Kyber768Draft00,  // 192 比特
+	}
+	if tls.HQCEnabled() {
+		list = append(list,
+			tls.X25519HQC128, // 128 比特量子安全等级（HQC）
+			tls.X25519HQC256, // 256 比特量子安全等级（HQC）
+		)
+	}
+	return append(list, tls.X25519) // 传统算法，用于兼容性回退
+}()
 
 var kexFlag = flag.String("kex", "", "只启用指定的密钥交换组（默认启用全部）")
 
@@ -113,10 +122,18 @@ func selectKEX() []tls.CurveID {
 		"SM2Kyber1024Draft00":    tls.SM2Kyber1024Draft00,
 		"X25519Kyber768Draft00":  tls.X25519Kyber768Draft00,
 		"X25519":                 tls.X25519,
+		// HQC（需 -tags pq_hqc 构建）；后两个别名与测试大纲 X25519HQC1/5 的写法对齐
+		"X25519HQC-128": tls.X25519HQC128,
+		"X25519HQC-256": tls.X25519HQC256,
+		"X25519HQC1":    tls.X25519HQC128,
+		"X25519HQC5":    tls.X25519HQC256,
 	}
 	id, ok := byName[*kexFlag]
 	if !ok {
-		log.Fatalf("未知密钥交换组 %q；可选：SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber1024Draft00、SM2Kyber1024Draft00、X25519Kyber768Draft00、X25519", *kexFlag)
+		log.Fatalf("未知密钥交换组 %q；可选：SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber1024Draft00、SM2Kyber1024Draft00、X25519Kyber768Draft00、X25519HQC-128、X25519HQC-256、X25519", *kexFlag)
+	}
+	if (id == tls.X25519HQC128 || id == tls.X25519HQC256) && !tls.HQCEnabled() {
+		log.Fatalf("HQC 组需要带 -tags pq_hqc 构建并链接 liboqs；当前构建不含 HQC")
 	}
 	return []tls.CurveID{id}
 }

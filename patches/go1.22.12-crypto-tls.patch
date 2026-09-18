@@ -355,8 +355,8 @@ diff -ruN a/src/crypto/tls/cfgo_test.go b/src/crypto/tls/cfgo_test.go
 +}
 diff -ruN a/src/crypto/tls/cfkem.go b/src/crypto/tls/cfkem.go
 --- a/src/crypto/tls/cfkem.go	1970-01-01 08:00:00.000000000 +0800
-+++ b/src/crypto/tls/cfkem.go	2026-09-18 11:44:19.915254376 +0800
-@@ -0,0 +1,115 @@
++++ b/src/crypto/tls/cfkem.go	2026-09-18 14:12:50.832068796 +0800
+@@ -0,0 +1,126 @@
 +// Copyright 2022 Cloudflare, Inc. All rights reserved. Use of this source code
 +// is governed by a BSD-style license that can be found in the LICENSE file.
 +//
@@ -408,6 +408,9 @@ diff -ruN a/src/crypto/tls/cfkem.go b/src/crypto/tls/cfkem.go
 +	// 256 比特量子安全等级：Kyber-1024 混合组
 +	X25519Kyber1024Draft00   = CurveID(0xfe36)
 +	SM2Kyber1024Draft00      = CurveID(0xfe37)
++	// HQC 混合组（需 -tags pq_hqc 且链接 liboqs；默认构建下不支持）
++	X25519HQC128             = CurveID(0xfe38)
++	X25519HQC256             = CurveID(0xfe39)
 +	invalidCurveID           = CurveID(0)
 +
 +	// A key agreeement similar in size but purposefully incompatible with
@@ -440,11 +443,19 @@ diff -ruN a/src/crypto/tls/cfkem.go b/src/crypto/tls/cfkem.go
 +		return hybrid.Kyber1024X25519()
 +	case SM2Kyber1024Draft00:
 +	    return hybrid.Kyber1024sm2()
++	case X25519HQC128:
++		return newHQCScheme("HQC-128")
++	case X25519HQC256:
++		return newHQCScheme("HQC-256")
 +	case DummyKex:
 +		return hpke.KEM_X25519_HKDF_SHA256.Scheme()
 +	}
 +	return nil
 +}
++
++// HQCEnabled 报告当前构建是否包含 HQC 混合组支持。
++// 只有带 -tags pq_hqc 且链接了 liboqs 的构建才返回 true。
++func HQCEnabled() bool { return hqcEnabled }
 +
 +// Generate a new shared secret and encapsulates it for the packed
 +// public key in ppk using randomness from rnd.
@@ -7170,6 +7181,238 @@ diff -ruN a/src/crypto/tls/hpke.go b/src/crypto/tls/hpke.go
 +	}
 +	return hpke.NewSuite(kem, kdf, aead), nil
 +}
+diff -ruN a/src/crypto/tls/hqckem.go b/src/crypto/tls/hqckem.go
+--- a/src/crypto/tls/hqckem.go	1970-01-01 08:00:00.000000000 +0800
++++ b/src/crypto/tls/hqckem.go	2026-09-18 14:13:41.230053584 +0800
+@@ -0,0 +1,207 @@
++//go:build pq_hqc
++
++// X25519 + HQC 混合密钥交换（由 liboqs 提供 HQC 实现）。
++//
++// CIRCL 不含 HQC，这里通过 cgo 调用 liboqs，并复用 CIRCL 的混合构造
++// （公钥/密文/共享密钥直接拼接，见 kem/hybrid/hybrid.go 的 scheme.Encapsulate）。
++//
++// 仅在带 -tags pq_hqc 时编译，且要求：
++//
++//	CGO_ENABLED=1
++//	CGO_CFLAGS=-I<liboqs>/include
++//	CGO_LDFLAGS=-L<liboqs>/lib -loqs
++//
++// 详见 docs/HQC-TLS-最小改造路线.md。
++
++package tls
++
++/*
++#include <stdlib.h>
++#include <oqs/oqs.h>
++
++// cgo 不能直接调用结构体里的函数指针，用 C 辅助函数包一层
++static OQS_KEM *hqc_kem_new(const char *name) { return OQS_KEM_new(name); }
++static void hqc_kem_free(OQS_KEM *k) { OQS_KEM_free(k); }
++static size_t hqc_len_pk(const OQS_KEM *k) { return k->length_public_key; }
++static size_t hqc_len_sk(const OQS_KEM *k) { return k->length_secret_key; }
++static size_t hqc_len_ct(const OQS_KEM *k) { return k->length_ciphertext; }
++static size_t hqc_len_ss(const OQS_KEM *k) { return k->length_shared_secret; }
++static int hqc_is_enabled(const char *name) { return OQS_KEM_alg_is_enabled(name); }
++static int hqc_keypair(const OQS_KEM *k, uint8_t *pk, uint8_t *sk) {
++	return OQS_KEM_keypair(k, pk, sk);
++}
++static int hqc_encaps(const OQS_KEM *k, uint8_t *ct, uint8_t *ss, const uint8_t *pk) {
++	return OQS_KEM_encaps(k, ct, ss, pk);
++}
++static int hqc_decaps(const OQS_KEM *k, uint8_t *ss, const uint8_t *ct, const uint8_t *sk) {
++	return OQS_KEM_decaps(k, ss, ct, sk);
++}
++*/
++import "C"
++
++import (
++	"bytes"
++	"fmt"
++	"unsafe"
++
++	"github.com/cloudflare/circl/kem"
++	"github.com/cloudflare/circl/kem/hybrid"
++)
++
++// hqcEnabled 表示本构建带 HQC 支持（供 Config 侧判断，见 cfkem.go 的 HQCEnabled）。
++const hqcEnabled = true
++
++// errHQC 组装 liboqs 调用失败的错误。
++func errHQC(op string, code C.int) error {
++	return fmt.Errorf("hqc: %s 失败 (OQS_STATUS=%d)", op, int(code))
++}
++
++// bytesPtr 返回切片首字节的 C 指针（空切片返回 nil）。
++func bytesPtr(b []byte) *C.uint8_t {
++	if len(b) == 0 {
++		return nil
++	}
++	return (*C.uint8_t)(unsafe.Pointer(&b[0]))
++}
++
++// hqcScheme 用 liboqs 实现 CIRCL 的 kem.Scheme 接口。
++// 注意：liboqs 不提供“由种子确定性生成/封装”的接口，DeriveKeyPair 与
++// EncapsulateDeterministically 退化为随机版本；这不影响与自身对端的互操作，
++// 只影响测试向量的可复现性。
++type hqcScheme struct {
++	name string
++	kem  *C.OQS_KEM
++}
++
++func (s *hqcScheme) Name() string               { return s.name }
++func (s *hqcScheme) PublicKeySize() int         { return int(C.hqc_len_pk(s.kem)) }
++func (s *hqcScheme) PrivateKeySize() int        { return int(C.hqc_len_sk(s.kem)) }
++func (s *hqcScheme) CiphertextSize() int        { return int(C.hqc_len_ct(s.kem)) }
++func (s *hqcScheme) SharedKeySize() int         { return int(C.hqc_len_ss(s.kem)) }
++func (s *hqcScheme) SeedSize() int              { return 32 }
++func (s *hqcScheme) EncapsulationSeedSize() int { return 32 }
++
++func (s *hqcScheme) GenerateKeyPair() (kem.PublicKey, kem.PrivateKey, error) {
++	pk := make([]byte, s.PublicKeySize())
++	sk := make([]byte, s.PrivateKeySize())
++	if rc := C.hqc_keypair(s.kem, bytesPtr(pk), bytesPtr(sk)); rc != C.OQS_SUCCESS {
++		return nil, nil, errHQC("keypair", rc)
++	}
++	pub := &hqcPublicKey{scheme: s, data: pk}
++	return pub, &hqcPrivateKey{scheme: s, data: sk, pub: pub}, nil
++}
++
++func (s *hqcScheme) DeriveKeyPair(seed []byte) (kem.PublicKey, kem.PrivateKey) {
++	if len(seed) != s.SeedSize() {
++		panic(kem.ErrSeedSize)
++	}
++	pk, sk, err := s.GenerateKeyPair()
++	if err != nil {
++		panic(err)
++	}
++	return pk, sk
++}
++
++func (s *hqcScheme) Encapsulate(pk kem.PublicKey) (ct, ss []byte, err error) {
++	p, ok := pk.(*hqcPublicKey)
++	if !ok {
++		return nil, nil, kem.ErrTypeMismatch
++	}
++	ct = make([]byte, s.CiphertextSize())
++	ss = make([]byte, s.SharedKeySize())
++	if rc := C.hqc_encaps(s.kem, bytesPtr(ct), bytesPtr(ss), bytesPtr(p.data)); rc != C.OQS_SUCCESS {
++		return nil, nil, errHQC("encaps", rc)
++	}
++	return ct, ss, nil
++}
++
++func (s *hqcScheme) EncapsulateDeterministically(pk kem.PublicKey, seed []byte) (ct, ss []byte, err error) {
++	if len(seed) != s.EncapsulationSeedSize() {
++		return nil, nil, kem.ErrSeedSize
++	}
++	return s.Encapsulate(pk)
++}
++
++func (s *hqcScheme) Decapsulate(sk kem.PrivateKey, ct []byte) ([]byte, error) {
++	p, ok := sk.(*hqcPrivateKey)
++	if !ok {
++		return nil, kem.ErrTypeMismatch
++	}
++	if len(ct) != s.CiphertextSize() {
++		return nil, kem.ErrCiphertextSize
++	}
++	ss := make([]byte, s.SharedKeySize())
++	if rc := C.hqc_decaps(s.kem, bytesPtr(ss), bytesPtr(ct), bytesPtr(p.data)); rc != C.OQS_SUCCESS {
++		return nil, errHQC("decaps", rc)
++	}
++	return ss, nil
++}
++
++func (s *hqcScheme) UnmarshalBinaryPublicKey(buf []byte) (kem.PublicKey, error) {
++	if len(buf) != s.PublicKeySize() {
++		return nil, kem.ErrPubKeySize
++	}
++	return &hqcPublicKey{scheme: s, data: append([]byte(nil), buf...)}, nil
++}
++
++func (s *hqcScheme) UnmarshalBinaryPrivateKey(buf []byte) (kem.PrivateKey, error) {
++	if len(buf) != s.PrivateKeySize() {
++		return nil, kem.ErrPrivKeySize
++	}
++	return &hqcPrivateKey{scheme: s, data: append([]byte(nil), buf...)}, nil
++}
++
++// hqcPublicKey 是 HQC 公钥（包装 liboqs 的原始字节）。
++type hqcPublicKey struct {
++	scheme *hqcScheme
++	data   []byte
++}
++
++func (pk *hqcPublicKey) Scheme() kem.Scheme             { return pk.scheme }
++func (pk *hqcPublicKey) MarshalBinary() ([]byte, error) { return pk.data, nil }
++func (pk *hqcPublicKey) Equal(other kem.PublicKey) bool {
++	o, ok := other.(*hqcPublicKey)
++	return ok && bytes.Equal(pk.data, o.data)
++}
++
++// hqcPrivateKey 是 HQC 私钥。
++type hqcPrivateKey struct {
++	scheme *hqcScheme
++	data   []byte
++	pub    *hqcPublicKey
++}
++
++func (sk *hqcPrivateKey) Scheme() kem.Scheme             { return sk.scheme }
++func (sk *hqcPrivateKey) MarshalBinary() ([]byte, error) { return sk.data, nil }
++func (sk *hqcPrivateKey) Equal(other kem.PrivateKey) bool {
++	o, ok := other.(*hqcPrivateKey)
++	return ok && bytes.Equal(sk.data, o.data)
++}
++
++func (sk *hqcPrivateKey) Public() kem.PublicKey {
++	if sk.pub == nil {
++		return nil
++	}
++	return sk.pub
++}
++
++// newHQCScheme 返回 X25519 + HQC 的混合方案；算法不可用时返回 nil
++// （上层 curveIdToCirclScheme 返回 nil 即视为不支持该组）。
++func newHQCScheme(algo string) kem.Scheme {
++	cname := C.CString(algo)
++	defer C.free(unsafe.Pointer(cname))
++
++	if C.hqc_is_enabled(cname) == 0 {
++		return nil
++	}
++	k := C.hqc_kem_new(cname)
++	if k == nil {
++		return nil
++	}
++	raw := &hqcScheme{name: algo, kem: k}
++	return hybrid.NewHybridScheme("X25519+"+algo, hybrid.X25519KEM(), raw)
++}
++
++var _ kem.Scheme = (*hqcScheme)(nil)
++var _ kem.PublicKey = (*hqcPublicKey)(nil)
++var _ kem.PrivateKey = (*hqcPrivateKey)(nil)
+diff -ruN a/src/crypto/tls/hqckem_stub.go b/src/crypto/tls/hqckem_stub.go
+--- a/src/crypto/tls/hqckem_stub.go	1970-01-01 08:00:00.000000000 +0800
++++ b/src/crypto/tls/hqckem_stub.go	2026-09-18 14:12:43.273071115 +0800
+@@ -0,0 +1,17 @@
++//go:build !pq_hqc
++
++// 未启用 HQC 时的占位实现：保证默认构建（含 CGO_ENABLED=0 交叉编译）
++// 完全不依赖 cgo 与 liboqs。
++//
++// 启用 HQC 需带 -tags pq_hqc 构建，见 docs/HQC-TLS-最小改造路线.md。
++
++package tls
++
++import "github.com/cloudflare/circl/kem"
++
++// hqcEnabled 表示本构建不带 HQC 支持。
++const hqcEnabled = false
++
++// newHQCScheme 在不带 pq_hqc 标签时恒返回 nil，
++// 上层（curveIdToCirclScheme）会据此把 HQC 组视为不支持。
++func newHQCScheme(algo string) kem.Scheme { return nil }
 diff -ruN a/src/crypto/tls/key_agreement.go b/src/crypto/tls/key_agreement.go
 --- a/src/crypto/tls/key_agreement.go	2025-02-01 02:38:03.000000000 +0800
 +++ b/src/crypto/tls/key_agreement.go	2025-03-17 11:59:42.000000000 +0800

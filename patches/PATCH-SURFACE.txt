@@ -28,6 +28,8 @@
 文件 src/ （上游）crypto/tls/handshake_server_tls13.go 和 <GOROOT>/src/crypto/tls/handshake_server_tls13.go 不同
 文件 src/ （上游）crypto/tls/handshake_test.go 和 <GOROOT>/src/crypto/tls/handshake_test.go 不同
 只在 <GOROOT>/src/crypto/tls 中存在：hpke.go
+只在 <GOROOT>/src/crypto/tls 中存在：hqckem.go
+只在 <GOROOT>/src/crypto/tls 中存在：hqckem_stub.go
 文件 src/ （上游）crypto/tls/key_agreement.go 和 <GOROOT>/src/crypto/tls/key_agreement.go 不同
 只在 <GOROOT>/src/crypto/tls 中存在：metrics_test.go
 文件 src/ （上游）crypto/tls/prf.go 和 <GOROOT>/src/crypto/tls/prf.go 不同

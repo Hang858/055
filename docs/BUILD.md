@@ -80,6 +80,8 @@ GOOS=windows GOARCH=amd64 go build -o ../../dist/tls/client/windows_client.exe  
 | `SM2Kyber768Draft00` | 192 比特 |
 | **`X25519Kyber1024Draft00`** | **256 比特** |
 | **`SM2Kyber1024Draft00`** | **256 比特** |
+| `X25519HQC-128`（别名 `X25519HQC1`） | 128 比特（需 `-tags pq_hqc` 构建） |
+| `X25519HQC-256`（别名 `X25519HQC5`） | 256 比特（需 `-tags pq_hqc` 构建） |
 | `X25519` | 传统算法（兼容性回退） |
 
 端到端自测示例（已实测通过）：
@@ -150,55 +152,55 @@ SLH-DSA 由 CIRCL v1.6.3 提供，`schemes.ByName("SLH-DSA-SHA2-256f")` 即可�
 
    即：这份 `internal/crypto/mytls` 目前是"挂空挡"的 fork，需要先接进入口再谈换算法。
 
-2. **HQC 尚未接入**：仓库里只有 `//NextProtos: []string{"pq-HQC-128"}` 两行注释，
-   没有任何 HQC 实现；CIRCL 也不提供 HQC，只能走 liboqs。
-   完整的最小改造路线（含 `kem.Scheme` 适配器要实现的 13 个方法、build tag 方案、
-   平台构建与风险）见 **[`HQC-TLS-最小改造路线.md`](HQC-TLS-最小改造路线.md)**。
+2. **`pqtls-1.3` 与 `tls-hybrid` 是两条独立的线**：前者（`internal/crypto/mytls` + `tls.ProtocolType`）
+   不在验收路径上；验收大纲的测试环境写的是 go1.22.12，对应的是 `tls-hybrid` + 补丁 GOROOT。
 
 ---
 
-## E. liboqs（接入 HQC 的前置条件）
+## E. TLS 侧 HQC（混合组 X25519HQC-128 / X25519HQC-256）
 
-现状：本机 `/home/hangzhang/liboqs-main/liboqs-main/build/` 是**用 mingw gcc
-（`C:/Users/lu/.../gcc.exe`）编的 Windows 产物**，`/usr/local/lib` 下没有 `liboqs`，
-Linux 上无法链接，需要重新编译。
+HQC 已实现：CIRCL 不含 HQC，因此用 cgo 调 **liboqs**，并复用 CIRCL 的混合构造。
+为不破坏跨平台交叉编译，HQC 做成**可选编译**：
 
-```sh
-cd /path/to/liboqs            # 例如 /home/hangzhang/liboqs-main/liboqs-main
-rm -rf build && mkdir build && cd build
-cmake -GNinja -DCMAKE_INSTALL_PREFIX=/usr/local \
-      -DOQS_USE_OPENSSL=ON -DOQS_BUILD_ONLY_LIB=ON ..
-ninja && sudo ninja install   # 或 cmake --build . && cmake --install .
-```
+| 构建方式 | HQC 是否可用 | cgo |
+|---|---|---|
+| `go build .`（默认） | ❌（`tls.HQCEnabled() == false`，请求 HQC 会明确报错） | 不需要，可 `CGO_ENABLED=0` 交叉编译 |
+| `go build -tags pq_hqc .` | ✅ | 需要 liboqs |
 
-liboqs-go 通过 `#cgo pkg-config: liboqs-go` 找库，需要提供 `liboqs-go.pc`：
+完整设计与实测见 **[`HQC-TLS-最小改造路线.md`](HQC-TLS-最小改造路线.md)**。速查：
 
 ```sh
-# 模板在 liboqs-go 模块的 .config/ 下
-cp ~/go/pkg/mod/github.com/open-quantum-safe/liboqs-go@*/".config"/liboqs-go.pc .
-# 按实际安装位置修改 LIBOQS_INCLUDE_DIR / LIBOQS_LIB_DIR，然后
-export PKG_CONFIG_PATH=$PWD:$PKG_CONFIG_PATH
+# 1) 编译 Linux 版 liboqs（只保留 HQC）
+cmake -S <liboqs 源码> -B <build 目录> -DCMAKE_INSTALL_PREFIX=<前缀> \
+      -DCMAKE_BUILD_TYPE=Release -DOQS_BUILD_ONLY_LIB=ON \
+      -DOQS_USE_OPENSSL=OFF -DOQS_DIST_BUILD=OFF -DOQS_ENABLE_KEM_HQC=ON \
+      -DOQS_ENABLE_KEM_KYBER=OFF -DOQS_ENABLE_KEM_ML_KEM=OFF \
+      -DOQS_ENABLE_KEM_BIKE=OFF -DOQS_ENABLE_KEM_CLASSIC_MCELIECE=OFF \
+      -DOQS_ENABLE_KEM_FRODOKEM=OFF -DOQS_ENABLE_KEM_NTRUPRIME=OFF \
+      -DOQS_ENABLE_SIG_DILITHIUM=OFF -DOQS_ENABLE_SIG_FALCON=OFF -DOQS_ENABLE_SIG_SPHINCS=OFF
+cmake --build <build 目录> -j$(nproc) && cmake --install <build 目录>
+
+# 2) 带 HQC 构建 tls-hybrid
+export CGO_ENABLED=1
+export CGO_CFLAGS="-I<前缀>/include"
+export CGO_LDFLAGS="-L<前缀>/lib -loqs"
+go build -tags pq_hqc -o e2e_hqc ./tls-hybrid/e2e
+
+# 3) 逐组测试
+./e2e_hqc -cert ... -key ... -ca ... -kex X25519HQC-128 -addr localhost:8095
+./e2e_hqc -cert ... -key ... -ca ... -kex X25519HQC-256 -addr localhost:8095
 ```
 
-HQC 相关事实（本机源码 `oqsconfig.h` 已确认开启）：
+**HQC 尺寸与口径**（liboqs）：
 
 | 项 | 值 |
 |---|---|
-| 算法名（`Init()` 用） | `"HQC-128"` / `"HQC-192"` / `"HQC-256"`（`src/kem/kem.h:62`） |
-| HQC-128 尺寸 | public key 2249 B，ciphertext 4433 B，shared secret 64 B |
+| 算法名 | `"HQC-128"` / `"HQC-192"` / `"HQC-256"`（`src/kem/kem.h`） |
+| HQC-128 | public key 2249 B，ciphertext 4433 B，shared secret 64 B |
+| HQC-256 | public key 类似量级，ciphertext 更大；共享密钥 64 B |
+| 量子安全等级 | HQC-128 → 128 比特；HQC-256 → 256 比特（HQC-192 属 Cat 3，不建议标 256） |
 | 对照 Kyber768 | public key 1184 B，ciphertext 1088 B，shared secret 32 B |
 
-liboqs-go 用法（切换算法只改 `kemName` 字符串）：
-
-```go
-kemName := "HQC-128"
-c := oqs.KeyEncapsulation{}
-defer c.Clean()
-c.Init(kemName, nil)
-pk, _ := c.GenerateKeyPair()
-ct, ss1, _ := s.EncapSecret(pk)
-ss2, _ := c.DecapSecret(ct)
-```
-
-`pqcert/*/go.mod` 里已经预留了 `github.com/open-quantum-safe/liboqs-go`（当前是
-`// indirect`，尚无代码引用）。
+> 备注：`pqcert/*/go.mod` 里的 `github.com/open-quantum-safe/liboqs-go` 与
+> **TLS 侧的 HQC 实现无关**——HQC 适配器直接走 cgo 调 liboqs 的 C API
+> （`OQS_KEM_*`），不依赖 liboqs-go，因此不需要 `liboqs-go.pc`。
