@@ -13,8 +13,14 @@
 
 ### 0.1 环境变量（每个新终端先执行一次）
 
+> **路径约定**：不写死任何绝对路径。先在终端里 `cd` 到**项目根目录**（即本仓库根目录，
+> 里面有 `README.md`、`tls-hybrid/`、`pqcert/`、`tools/`、`docs/`、`.build/`），
+> 下面的 `$R` 就取当前目录；换机器只要换 `cd` 的目标即可。
+> 逐步骤、更细的命令（含多终端标注）见 `docs/测试大纲-输入及操作-细化.md`。
+
 ```sh
-export R=/home/hangzhang/work/055                 # 仓库根
+cd 055                                            # ← 换成你本机的项目目录名（进入项目根目录）
+export R=$PWD                                     # 仓库根（= 当前目录）
 export GOROOT=$R/.build/go                        # 打补丁的 Linux 版 Go 1.22.12
 export PATH=$GOROOT/bin:$PATH
 export GOCACHE=$R/.build/gocache GOPATH=$R/.build/gopath
@@ -89,11 +95,11 @@ openssl x509 -in server_root_cert1.pem -noout -dates -subject
 
 ```sh
 # 终端C：抓包（tshark 写法；-F pcap 可省略，脚本两种格式都认）
-sudo tshark -i lo -f "tcp port 8099" -F pcap -w /tmp/tls.pcap
-# 等价写法： sudo tcpdump -i lo -w /tmp/tls.pcap "tcp port 8099"
+sudo tshark -i lo -f "tcp port 8099" -F pcap -w $R/.build/tls.pcap
+# 等价写法： sudo tcpdump -i lo -w $R/.build/tls.pcap "tcp port 8099"
 
 # 解析（可在抓包结束后执行）
-python3 $R/tools/tls_hello_check.py /tmp/tls.pcap --expect X25519Kyber1024Draft00
+python3 $R/tools/tls_hello_check.py $R/.build/tls.pcap --expect X25519Kyber1024Draft00
 ```
 
 脚本会打印：ClientHello 的 `supported_versions` / `supported_groups` / 每个 `key_share`
@@ -180,10 +186,10 @@ cd $CERT && $E2E -cert server_root_cert1.pem -key server_root_key1.pem \
 
 ```sh
 # 方式一：用解析脚本（推荐，直接给出结论与长度断言）
-python3 $R/tools/tls_hello_check.py /tmp/tls.pcap
+python3 $R/tools/tls_hello_check.py $R/.build/tls.pcap
 
 # 方式二：用 tshark 提取字段
-tshark -r /tmp/tls.pcap -Y "tls.handshake.type == 1" -T fields \
+tshark -r $R/.build/tls.pcap -Y "tls.handshake.type == 1" -T fields \
   -E header=y -E occurrence=a -E aggregator=, \
   -e tls.handshake.legacy_version \
   -e tls.handshake.extensions.supported_version \
@@ -211,9 +217,9 @@ key_share_key_exchange_length = 865      ← 65(SM2 公钥) + 800(Kyber512 公�
 用同一份抓包（步骤同 TLS-1-4）：
 
 ```sh
-python3 $R/tools/tls_hello_check.py /tmp/tls.pcap --expect SM2Kyber512Draft00
+python3 $R/tools/tls_hello_check.py $R/.build/tls.pcap --expect SM2Kyber512Draft00
 
-tshark -r /tmp/tls.pcap -Y "tls.handshake.type == 2" -T fields \
+tshark -r $R/.build/tls.pcap -Y "tls.handshake.type == 2" -T fields \
   -E header=y -E occurrence=a -E aggregator=, \
   -e tls.handshake.extensions_key_share_selected_group \
   -e tls.handshake.extensions_key_share_key_exchange_length \
@@ -291,7 +297,7 @@ error: ... tlsv1 alert protocol version
 抓包侧核对告警类型：
 
 ```sh
-tshark -r /tmp/tls.pcap -Y "tls.alert_message" -T fields \
+tshark -r $R/.build/tls.pcap -Y "tls.alert_message" -T fields \
   -e tls.alert_message.level -e tls.alert_message.desc
 # desc = 70 (protocol_version)
 ```
@@ -342,8 +348,8 @@ cd $R/tls-hybrid/client && $CLI -kex DummyKex,X25519
 **步骤3** 抓包确认（终端C，见 §0.4）：
 
 ```sh
-python3 $R/tools/tls_hello_check.py /tmp/tls.pcap
-tshark -r /tmp/tls.pcap -Y "tls.handshake.type == 2" -T fields \
+python3 $R/tools/tls_hello_check.py $R/.build/tls.pcap
+tshark -r $R/.build/tls.pcap -Y "tls.handshake.type == 2" -T fields \
   -e frame.number -e tls.handshake.random -e tls.handshake.extensions_key_share_selected_group
 ```
 
@@ -536,7 +542,7 @@ $R/.build/tlsbench -mode client -addr localhost:8099 -kex X25519Kyber1024Draft00
 ```sh
 # 终端A：服务端（记录 PID）
 cd $CERT && $E2E -cert server_root_cert1.pem -key server_root_key1.pem \
-  -ca server_root_cert1.pem -addr localhost:8099 >/tmp/srv.log 2>&1 &
+  -ca server_root_cert1.pem -addr localhost:8099 >$R/.build/srv.log 2>&1 &
 SRVPID=$!
 
 # 终端B：制造负载（循环握手）
@@ -647,14 +653,14 @@ file $R/dist/tls/server/windows_server.exe $R/dist/tls/client/windows_client.exe
 
 ```sh
 # 终端C 抓包
-sudo tshark -i lo -f "tcp port 8099" -F pcap -w /tmp/tls_hybrid.pcap
+sudo tshark -i lo -f "tcp port 8099" -F pcap -w $R/.build/tls_hybrid.pcap
 
 # 终端B 发起一次握手（可换任意混合组）
 cd $CERT && $E2E -cert server_root_cert1.pem -key server_root_key1.pem \
   -ca server_root_cert1.pem -kex X25519Kyber1024Draft00 -addr localhost:8099
 
 # 解析并断言
-python3 $R/tools/tls_hello_check.py /tmp/tls_hybrid.pcap --expect X25519Kyber1024Draft00
+python3 $R/tools/tls_hello_check.py $R/.build/tls_hybrid.pcap --expect X25519Kyber1024Draft00
 ```
 
 ### 期望结果（实测）

@@ -43,9 +43,11 @@ var (
 )
 
 func init() {
-	flag.StringVar(&certFile, "cert", "/Users/zhaohaitian/Desktop/新近期工作/证书_TLS协议实现/tlsv1/tls/server_client/server_root_cert.pem", "服务器证书文件")
-	flag.StringVar(&keyFile, "key", "/Users/zhaohaitian/Desktop/新近期工作/证书_TLS协议实现/tlsv1/tls/server_client/server_root_key.pem", "服务器私钥文件")
-	flag.StringVar(&caCertFile, "ca", "/Users/zhaohaitian/Desktop/新近期工作/证书_TLS协议实现/tlsv1/tls/server_client/server_root_cert1.pem", "CA 证书文件 (客户端使用)")
+	// 默认值用相对路径（相对当前工作目录），实际使用时可用 -cert/-key/-ca 覆盖，
+	// 例如从项目根目录执行： .build/e2e -cert .build/certs/server_root_cert1.pem -key .build/certs/server_root_key1.pem
+	flag.StringVar(&certFile, "cert", "./server_root_cert1.pem", "服务器证书文件")
+	flag.StringVar(&keyFile, "key", "./server_root_key1.pem", "服务器私钥文件")
+	flag.StringVar(&caCertFile, "ca", "./server_root_cert1.pem", "CA 证书文件 (客户端使用)")
 	flag.StringVar(&serverAddr, "addr", "localhost:8080", "服务器地址")
 	flag.StringVar(&postMessage, "msg", "Secret quantum-safe message", "客户端发送的消息（文本）")
 	flag.StringVar(&msgHex, "msg-hex", "", "客户端发送的消息（十六进制，用于二进制数据；优先于 -msg）")

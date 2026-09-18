@@ -86,13 +86,16 @@ GOOS=windows GOARCH=amd64 go build -o ../../dist/tls/client/windows_client.exe  
 
 端到端自测示例（已实测通过）：
 
+以下命令**在项目根目录执行**（路径均为项目内相对路径）：
+
 ```sh
-cd tls-hybrid/e2e
-go build -o /tmp/e2e .
-/tmp/e2e -cert server_root_cert.pem -key server_root_key.pem \
-         -ca server_root_cert1.pem -kex X25519Kyber1024Draft00 -addr localhost:8099
+( cd tls-hybrid/e2e && go build -o ../../.build/e2e . )
+.build/e2e -cert .build/certs/server_root_cert1.pem -key .build/certs/server_root_key1.pem \
+           -ca .build/certs/server_root_cert1.pem -kex X25519Kyber1024Draft00 -addr localhost:8099
 # 输出：🔑 使用密钥交换算法: X25519Kyber1024Draft00 (混合后量子, 256 比特量子安全等级)
 ```
+
+> 证书准备（`.build/certs/`）见 [`docs/测试大纲-输入及操作-细化.md`](测试大纲-输入及操作-细化.md) §0.3。
 
 ### 示例程序的参数
 

@@ -35,7 +35,7 @@ func main1() {
 
 	// 启动 HTTPS 服务器，监听端口 8080
 	log.Println("启动 HTTPS 服务器，监听端口 8080")
-	err := server.ListenAndServeTLS("/Users/zhaohaitian/Desktop/新近期工作/证书&TLS协议实现/tlsv1/tls/test/server.crt", "/Users/zhaohaitian/Desktop/新近期工作/证书&TLS协议实现/tlsv1/tls/test/server.key") // 使用证书和私钥文件
+	err := server.ListenAndServeTLS("./server.crt", "./server.key") // 使用当前目录下的证书和私钥文件
 	if err != nil {
 		log.Fatalf("启动 HTTPS 服务器失败: %s", err)
 	}
