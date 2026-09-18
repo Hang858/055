@@ -59,7 +59,7 @@
 |---|---|---|
 | `tls-hybrid/` | 混合密钥交换按量子安全等级覆盖 **128 / 192 / 256 比特**：`SM2Kyber512Draft00`、`X25519Kyber512Draft00`（128）；`X25519Kyber768Draft00`、`SM2Kyber768Draft00`、`X25519Kyber768Draft00Old`、`P256Kyber768Draft00`（192）；**`X25519Kyber1024Draft00`、`SM2Kyber1024Draft00`（256）**；保留 `X25519` 回退 | 需 `patches/` 里打补丁的 Go 1.22.12 ✅（已实测 6 组握手） |
 | **HQC（TLS）** | **`X25519HQC-128`（128 比特）、`X25519HQC-256`（256 比特）**，HQC 由 liboqs 提供，混合构造与 Kyber 组一致 | ✅ 已实测握手+加密通信；需 `-tags pq_hqc` 构建（cgo+liboqs），默认构建不含 HQC |
-| `pqcert/` | 签名（格）**ML-DSA-44/Dilithium2（128）、ML-DSA-65/Dilithium3（192）、ML-DSA-87/Dilithium5（256）**；签名（哈希）**SLH-DSA-SHA2-128s/128f、192s/192f、256s/256f**；KEM **Kyber-512、Kyber-768、Kyber-1024** | 用 Go 1.25+ 可直接编译运行 ✅（三个工具均实跑通过） |
+| `pqcert/` | 签名（格）**ML-DSA-44/Dilithium2（128）、ML-DSA-65/Dilithium3（192）、ML-DSA-87/Dilithium5（256）**；签名（哈希）**SLH-DSA-SHA2-128s/128f、192s/192f、256s/256f**；KEM **Kyber-512、Kyber-768、Kyber-1024** | 需 **Go 1.25+**（`go.mod` 要求 1.25.1）；此前用 Go 1.25 工具链实跑通过 ✅，本机只有 Go 1.22，未复跑（TLS 侧与本目录互不依赖） |
 | `pqtls-1.3/` | `internal/crypto/mytls` fork 内实现 X25519+Kyber768 混合 | ⚠️ 入口引用了未定义符号，编译不过，见下 |
 
 ---
@@ -90,7 +90,9 @@ export PQROOT=$PWD
                -ca .build/certs/server_root_cert1.pem -kex X25519HQC-256 -addr localhost:8095
 # → 🔑 使用密钥交换算法: X25519HQC-256 (混合后量子, 256 比特量子安全等级)
 
-# 证书工具全部可编译可运行
+# 证书工具（pqcert）：go.mod 要求 Go 1.25.1+，需要用 Go 1.25+ 的工具链执行
+# 说明：本仓库目前验证过的 TLS 侧工具链是 Go 1.22.12（.build/go），它**不能**编译 pqcert；
+#       下面的结果来自此前用 Go 1.25 工具链的实跑，换机器请先准备 Go 1.25+
 ( cd pqcert/pure-pq && go build . )      # 五条链（含 ML-DSA-87、SLH-DSA-256s）验签全部通过
 ( cd pqcert/sm2 && go build . )          # 含 256 比特链（ML-DSA-87+Kyber-1024、SLH-DSA-256 双重签名）
 ( cd pqcert/x509-multi && go build . )   # 含 ML-DSA-87 / Kyber-1024 / SLH-DSA-192f/256f 用户证书
