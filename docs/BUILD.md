@@ -101,8 +101,9 @@ go build -o /tmp/e2e .
 | `-kex A,B,C` | e2e / server / client | 启用的密钥交换组，逗号分隔（顺序即偏好，默认全部）。支持 `DummyKex` 用于触发 HelloRetryRequest |
 | `-verify` | e2e / client | 客户端启用标准证书链校验（默认关闭以便自测） |
 | `-ca <文件>` | e2e / client | 信任的 CA 文件（client 默认为工作目录下的 `server.crt`） |
+| `-cert <文件>` `-key <文件>` | e2e / server | 服务端证书与私钥（server 默认 `./server_root_cert1.pem`、`./server_root_key1.pem`，即历史行为；指定后可从项目根目录用相对路径启动） |
 | `-msg` / `-msg-hex` | e2e | 客户端发送的文本 / 十六进制二进制数据 |
-| `-cert` `-key` `-addr` `-showkex` | e2e | 服务端证书、私钥、监听地址、是否打印协商结果 |
+| `-addr` / `-showkex` | e2e | 监听地址 / 是否打印协商结果 |
 
 性能测试工具（`tools/tlsbench`，需用打补丁的 GOROOT 编译）：
 

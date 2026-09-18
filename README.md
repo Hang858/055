@@ -72,28 +72,30 @@
 2. 用该 GOROOT 编译 `tls-hybrid/`，产物放 `dist/`
 3. 用 Go 1.25+ 编译/运行 `pqcert/` 下的证书工具
 
-已实测通过的项：
+已实测通过的项（以下命令均**在项目根目录执行**，路径为项目内相对路径）：
 
 ```sh
 # TLS：Linux 版补丁工具链重建 + 逐组握手（含 256 比特组）
-cd tls-hybrid/e2e && go build -o /tmp/e2e .
-/tmp/e2e -cert server_root_cert.pem -key server_root_key.pem \
-         -ca server_root_cert1.pem -kex X25519Kyber1024Draft00 -addr localhost:8099
+( cd tls-hybrid/e2e && go build -o ../../.build/e2e . )
+.build/e2e -cert .build/certs/server_root_cert1.pem -key .build/certs/server_root_key1.pem \
+           -ca .build/certs/server_root_cert1.pem -kex X25519Kyber1024Draft00 -addr localhost:8099
 
 # TLS + HQC（需先编 liboqs，见 docs/HQC-TLS-最小改造路线.md）
-export CGO_ENABLED=1 CGO_CFLAGS="-I.build/liboqs/include" \
-       CGO_LDFLAGS="-L.build/liboqs/lib -loqs"
-go build -tags pq_hqc -o /tmp/e2e_hqc .
-/tmp/e2e_hqc -cert server_root_cert.pem -key server_root_key.pem \
-             -ca server_root_cert1.pem -kex X25519HQC-256 -addr localhost:8095
+# 注意：CGO_CFLAGS / CGO_LDFLAGS 要用绝对路径（cgo 编译时的工作目录不是源码目录）
+export PQROOT=$PWD
+( cd tls-hybrid/e2e && CGO_ENABLED=1 \
+    CGO_CFLAGS="-I$PQROOT/.build/liboqs/include" CGO_LDFLAGS="-L$PQROOT/.build/liboqs/lib -loqs" \
+    go build -tags pq_hqc -o ../../.build/e2e_hqc . )
+.build/e2e_hqc -cert .build/certs/server_root_cert1.pem -key .build/certs/server_root_key1.pem \
+               -ca .build/certs/server_root_cert1.pem -kex X25519HQC-256 -addr localhost:8095
 # → 🔑 使用密钥交换算法: X25519HQC-256 (混合后量子, 256 比特量子安全等级)
 
 # 证书工具全部可编译可运行
-cd pqcert/pure-pq && go build .         # 五条链（含 ML-DSA-87、SLH-DSA-256s）验签全部通过
-cd pqcert/sm2 && go build .             # 含 256 比特链（ML-DSA-87+Kyber-1024、SLH-DSA-256 双重签名）
-cd pqcert/x509-multi && go build .      # 含 ML-DSA-87 / Kyber-1024 / SLH-DSA-192f/256f 用户证书
-cd pqcert/gen-pq-chain && go run .      # 输出至 pqcert/certs-sample/
-cd pqcert/gen-sm2-chain && go run .     # 输出至 pqcert/certs-sample/
+( cd pqcert/pure-pq && go build . )      # 五条链（含 ML-DSA-87、SLH-DSA-256s）验签全部通过
+( cd pqcert/sm2 && go build . )          # 含 256 比特链（ML-DSA-87+Kyber-1024、SLH-DSA-256 双重签名）
+( cd pqcert/x509-multi && go build . )   # 含 ML-DSA-87 / Kyber-1024 / SLH-DSA-192f/256f 用户证书
+( cd pqcert/gen-pq-chain && go run . )   # 输出至 pqcert/certs-sample/
+( cd pqcert/gen-sm2-chain && go run . )  # 输出至 pqcert/certs-sample/
 ```
 
 ---

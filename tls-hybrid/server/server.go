@@ -111,6 +111,13 @@ var supportedKEX = func() []tls.CurveID {
 
 var kexFlag = flag.String("kex", "", "启用的密钥交换组，可用逗号分隔多个（默认启用全部）")
 
+// certFlag / keyFlag 指定服务端证书与私钥；默认值保持历史行为（当前目录下的两个文件），
+// 这样既可以在 tls-hybrid/server 目录直接启动，也可以从项目根目录用相对路径启动：
+//
+//	.build/server -cert .build/certs/server_root_cert1.pem -key .build/certs/server_root_key1.pem
+var certFlag = flag.String("cert", "./server_root_cert1.pem", "服务端证书文件")
+var keyFlag = flag.String("key", "./server_root_key1.pem", "服务端私钥文件")
+
 // kexByName 组名 → CurveID。DummyKex(0xfe33) 是预留给 HelloRetryRequest 测试的
 // “服务端不会支持”的组：客户端把它放在首位、同时 supported_groups 里保留 X25519，
 // 即可让服务端回 HRR（见 docs/TLS测试-用例执行步骤.md 的 TLS-1-8）。
@@ -203,7 +210,7 @@ func main() {
 	}
 
 	log.Println("Starting HTTPS server on :8080")
-	err := server.ListenAndServeTLS("./server_root_cert1.pem", "./server_root_key1.pem")
+	err := server.ListenAndServeTLS(*certFlag, *keyFlag)
 	if err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
