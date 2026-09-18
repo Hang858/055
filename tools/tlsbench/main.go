@@ -21,6 +21,7 @@ import (
 	"crypto/x509"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -124,6 +125,7 @@ func runServer(addr string, certFile, keyFile string, curves []tls.CurveID, payl
 		CurvePreferences: curves,
 		MinVersion:       tls.VersionTLS13,
 		MaxVersion:       tls.VersionTLS13,
+		KeyLogWriter:     keyLogWriter(), // 设置 SSLKEYLOGFILE 时导出密钥供 Wireshark 解密
 	}
 	ln, err := tls.Listen("tcp", addr, cfg)
 	if err != nil {
@@ -182,6 +184,7 @@ func runClient(addr, caFile string, verify bool, curves []tls.CurveID, n, c, pay
 		CurvePreferences:   curves,
 		MinVersion:         tls.VersionTLS13,
 		MaxVersion:         tls.VersionTLS13,
+		KeyLogWriter:       keyLogWriter(), // 设置 SSLKEYLOGFILE 时导出密钥供 Wireshark 解密
 	}
 
 	log.Printf("tlsbench 客户端 -> %s，密钥交换组: %v，并发=%d，总次数=%d",
@@ -270,6 +273,22 @@ func runClient(addr, caFile string, verify bool, curves []tls.CurveID, n, c, pay
 		ms(sum/time.Duration(len(durs))), ms(durs[0]), ms(durs[len(durs)-1]),
 		ms(pct(50)), ms(pct(90)), ms(pct(95)), ms(pct(99)))
 	return 0
+}
+
+// keyLogWriter 在设置了环境变量 SSLKEYLOGFILE 时，把 TLS 会话密钥追加写入该文件，
+// 便于用 Wireshark 解密抓包：Wireshark → 首选项 → Protocols → TLS →
+// (Pre)-Master-Secret log filename 选择该文件。仅供测试使用。
+func keyLogWriter() io.Writer {
+	path := os.Getenv("SSLKEYLOGFILE")
+	if path == "" {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+	if err != nil {
+		log.Printf("无法打开 SSLKEYLOGFILE=%s: %v", path, err)
+		return nil
+	}
+	return f
 }
 
 func main() {

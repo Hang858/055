@@ -15,6 +15,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -148,6 +149,22 @@ func selectKEX() []tls.CurveID {
 	return out
 }
 
+// keyLogWriter 在设置了环境变量 SSLKEYLOGFILE 时，把 TLS 会话密钥追加写入该文件，
+// 便于用 Wireshark 解密抓包：Wireshark → 首选项 → Protocols → TLS →
+// (Pre)-Master-Secret log filename 选择该文件。仅供测试使用。
+func keyLogWriter() io.Writer {
+	path := os.Getenv("SSLKEYLOGFILE")
+	if path == "" {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+	if err != nil {
+		log.Printf("无法打开 SSLKEYLOGFILE=%s: %v", path, err)
+		return nil
+	}
+	return f
+}
+
 func main() {
 	flag.Parse()
 
@@ -167,6 +184,7 @@ func main() {
 		CurvePreferences:   selectKEX(),
 		MinVersion:         tls.VersionTLS13,
 		MaxVersion:         tls.VersionTLS13,
+		KeyLogWriter:       keyLogWriter(), // 设置 SSLKEYLOGFILE 时导出密钥供 Wireshark 解密
 	}
 
 	client := &http.Client{

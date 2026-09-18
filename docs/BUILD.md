@@ -108,6 +108,9 @@ GOOS=windows GOARCH=amd64 go build -o ../../dist/tls/client/windows_client.exe  
 | `-msg` / `-msg-hex` | e2e | 客户端发送的文本 / 十六进制二进制数据 |
 | `-addr` / `-showkex` | e2e | 监听地址 / 是否打印协商结果 |
 
+环境变量：设置 `SSLKEYLOGFILE=<文件>` 可让上述程序把 TLS 会话密钥写入该文件，供 Wireshark 解密
+（Wireshark → 首选项 → Protocols → TLS → (Pre)-Master-Secret log filename）。仅供测试使用。
+
 性能测试工具（`tools/tlsbench`，需用打补丁的 GOROOT 编译）：
 
 ```sh
