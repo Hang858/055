@@ -17,9 +17,11 @@ import (
 	"github.com/cloudflare/circl/kem/kyber/kyber1024"
 	"github.com/cloudflare/circl/kem/kyber/kyber512"
 	"github.com/cloudflare/circl/kem/kyber/kyber768"
+	"github.com/cloudflare/circl/sign"
 	mode2 "github.com/cloudflare/circl/sign/dilithium/mode2"
 	mode3 "github.com/cloudflare/circl/sign/dilithium/mode3"
 	mode5 "github.com/cloudflare/circl/sign/dilithium/mode5"
+	"github.com/cloudflare/circl/sign/schemes"
 	"github.com/tjfoc/gmsm/sm2"
 	"github.com/tjfoc/gmsm/x509"
 )
@@ -35,6 +37,13 @@ const (
 	// 256 比特量子安全等级
 	Dilithium5 // ML-DSA-87
 	Kyber1024
+	// 哈希签名（SLH-DSA / SPHINCS+），覆盖 128 / 192 / 256 比特等级
+	SPHINCS128s
+	SPHINCS128f
+	SPHINCS192s
+	SPHINCS192f
+	SPHINCS256s
+	SPHINCS256f
 )
 
 // 自定义扩展OID
@@ -52,6 +61,32 @@ type PQKeyPair struct {
 	KemSK    interface{}
 	KemPK    interface{}
 	PubBytes []byte
+}
+
+// getSPHINCSScheme 返回 SLH-DSA / SPHINCS+ 的签名方案（按 CIRCL 注册名取）。
+func getSPHINCSScheme(algo PQAlgorithm) sign.Scheme {
+	var name string
+	switch algo {
+	case SPHINCS128s:
+		name = "SLH-DSA-SHA2-128s"
+	case SPHINCS128f:
+		name = "SLH-DSA-SHA2-128f"
+	case SPHINCS192s:
+		name = "SLH-DSA-SHA2-192s"
+	case SPHINCS192f:
+		name = "SLH-DSA-SHA2-192f"
+	case SPHINCS256s:
+		name = "SLH-DSA-SHA2-256s"
+	case SPHINCS256f:
+		name = "SLH-DSA-SHA2-256f"
+	default:
+		panic("不支持的 SPHINCS / SLH-DSA 算法")
+	}
+	scheme := schemes.ByName(name)
+	if scheme == nil {
+		panic("当前 CIRCL 版本不支持: " + name)
+	}
+	return scheme
 }
 
 func generateSerial() *big.Int {
@@ -73,6 +108,17 @@ func generateCAKey(algo PQAlgorithm) *PQKeyPair {
 	case Dilithium5:
 		pk, sk, _ := mode5.GenerateKey(rand.Reader)
 		return &PQKeyPair{Algo: Dilithium5, SignSK: sk, SignPK: pk, PubBytes: pk.Bytes()}
+	case SPHINCS128s, SPHINCS128f, SPHINCS192s, SPHINCS192f, SPHINCS256s, SPHINCS256f:
+		scheme := getSPHINCSScheme(algo)
+		pk, sk, err := scheme.GenerateKey()
+		if err != nil {
+			panic(err)
+		}
+		pub, err := pk.MarshalBinary()
+		if err != nil {
+			panic(err)
+		}
+		return &PQKeyPair{Algo: algo, SignSK: sk, SignPK: pk, PubBytes: pub}
 	default:
 		panic("不支持的算法")
 	}
@@ -101,6 +147,17 @@ func generateEndEntityKey(algo PQAlgorithm) *PQKeyPair {
 	case Dilithium5:
 		pk, sk, _ := mode5.GenerateKey(rand.Reader)
 		return &PQKeyPair{Algo: Dilithium5, SignSK: sk, SignPK: pk, PubBytes: pk.Bytes()}
+	case SPHINCS128s, SPHINCS128f, SPHINCS192s, SPHINCS192f, SPHINCS256s, SPHINCS256f:
+		scheme := getSPHINCSScheme(algo)
+		pk, sk, err := scheme.GenerateKey()
+		if err != nil {
+			panic(err)
+		}
+		pub, err := pk.MarshalBinary()
+		if err != nil {
+			panic(err)
+		}
+		return &PQKeyPair{Algo: algo, SignSK: sk, SignPK: pk, PubBytes: pub}
 	default:
 		panic("不支持的算法")
 	}
@@ -120,6 +177,9 @@ func pqSign(parentKey *PQKeyPair, tbs []byte) []byte {
 		sig := make([]byte, mode5.SignatureSize)
 		mode5.SignTo(parentKey.SignSK.(*mode5.PrivateKey), tbs, sig)
 		return sig
+	case SPHINCS128s, SPHINCS128f, SPHINCS192s, SPHINCS192f, SPHINCS256s, SPHINCS256f:
+		scheme := getSPHINCSScheme(parentKey.Algo)
+		return scheme.Sign(parentKey.SignSK.(sign.PrivateKey), tbs, nil)
 	default:
 		panic("不支持的签名算法")
 	}
@@ -148,6 +208,13 @@ func pqVerify(algo PQAlgorithm, pubBytes, originalTBS, sig []byte) bool {
 			return false
 		}
 		return mode5.Verify(&pk, originalTBS, sig)
+	case SPHINCS128s, SPHINCS128f, SPHINCS192s, SPHINCS192f, SPHINCS256s, SPHINCS256f:
+		scheme := getSPHINCSScheme(algo)
+		pk, err := scheme.UnmarshalBinaryPublicKey(pubBytes)
+		if err != nil {
+			return false
+		}
+		return scheme.Verify(pk, originalTBS, sig, nil)
 	default:
 		return false
 	}
@@ -562,6 +629,38 @@ func main() {
 	fmt.Println("  根证书自签名验证:      ", root256Cert.CheckSignatureFrom(root256Cert))
 	fmt.Println("  中间证书由根签名验证:  ", inter256Cert.CheckSignatureFrom(root256Cert))
 	fmt.Println("  终端证书由中间签名验证:", leaf256Cert.CheckSignatureFrom(inter256Cert))
+
+	// ==================== 256 比特哈希签名链（SLH-DSA） ====================
+	fmt.Println("\n\n=== 256 比特哈希签名链（SLH-DSA-SHA2-256，哈希签名）===")
+	rootSlhSK, rootSlhCert, rootSlhPQ, rootSlhTBS := genRootCA(SPHINCS256s)
+	printCert(rootSlhCert, "SLH-DSA-256 根证书")
+	saveCert(rootSlhCert, "root_slhdsa256.pem")
+	saveSM2PrivateKey(rootSlhSK, "root_slhdsa256_sm2.key")
+	savePQPrivateKey(rootSlhPQ.SignSK, "root_pq_slhdsa256.key")
+
+	interSlhSK, interSlhCert, interSlhPQ, interSlhTBS := genIntermediate(rootSlhSK, rootSlhCert, rootSlhPQ, "SLHDSA256-Intermediate", SPHINCS256s)
+	printCert(interSlhCert, "SLH-DSA-256 中间证书")
+	saveCert(interSlhCert, "inter_slhdsa256.pem")
+	saveSM2PrivateKey(interSlhSK, "inter_slhdsa256_sm2.key")
+	savePQPrivateKey(interSlhPQ.SignSK, "inter_pq_slhdsa256.key")
+
+	leafSlhCert, leafSlhSK, leafSlhPQ, leafSlhTBS := genEndEntity(interSlhSK, interSlhCert, interSlhPQ, SPHINCS256f, "User-SLHDSA256")
+	printCert(leafSlhCert, "SLH-DSA-256 终端证书")
+	saveCert(leafSlhCert, "user_slhdsa256f.pem")
+	saveSM2PrivateKey(leafSlhSK, "user_slhdsa256f_sm2.key")
+	savePQPrivateKey(leafSlhPQ.SignSK, "leaf_pq_slhdsa256f.key")
+
+	// SM2 链 + 抗量子（SLH-DSA）签名双重验签
+	rSlhPub, rSlhSig := getPQFromCert(rootSlhCert)
+	iSlhPub, iSlhSig := getPQFromCert(interSlhCert)
+	_, lSlhSig := getPQFromCert(leafSlhCert)
+	fmt.Println("\n🔍 256 比特哈希签名链验签")
+	fmt.Println("  SM2 根自签:              ", rootSlhCert.CheckSignatureFrom(rootSlhCert))
+	fmt.Println("  SM2 中间证书由根签发:    ", interSlhCert.CheckSignatureFrom(rootSlhCert))
+	fmt.Println("  SM2 终端证书由中间签发:  ", leafSlhCert.CheckSignatureFrom(interSlhCert))
+	fmt.Println("  抗量子(SLH-DSA-256) 根自签:      ", pqVerify(SPHINCS256s, rSlhPub, rootSlhTBS, rSlhSig))
+	fmt.Println("  抗量子(SLH-DSA-256) 中间证书:    ", pqVerify(SPHINCS256s, rSlhPub, interSlhTBS, iSlhSig))
+	fmt.Println("  抗量子(SLH-DSA-256) 终端证书:    ", pqVerify(SPHINCS256s, iSlhPub, leafSlhTBS, lSlhSig))
 
 	fmt.Println("\n🎉 全部完成！")
 }

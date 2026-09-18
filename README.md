@@ -75,7 +75,7 @@ cd tls-hybrid/e2e && go build -o /tmp/e2e .
 
 # 证书工具全部可编译可运行
 cd pqcert/pure-pq && go build .         # 五条链（含 ML-DSA-87、SLH-DSA-256s）验签全部通过
-cd pqcert/sm2 && go build .             # 含 256 比特链（ML-DSA-87 + Kyber-1024）
+cd pqcert/sm2 && go build .             # 含 256 比特链（ML-DSA-87+Kyber-1024、SLH-DSA-256 双重签名）
 cd pqcert/x509-multi && go build .      # 含 ML-DSA-87 / Kyber-1024 / SLH-DSA-192f/256f 用户证书
 cd pqcert/gen-pq-chain && go run .      # 输出至 pqcert/certs-sample/
 cd pqcert/gen-sm2-chain && go run .     # 输出至 pqcert/certs-sample/
@@ -103,7 +103,7 @@ cd pqcert/gen-sm2-chain && go run .     # 输出至 pqcert/certs-sample/
 
 - 提交历史：`baseline`（整理前完整快照，便于回溯）→ `整理`（重命名/归档/清理）
   → `工程化文件`（README/.gitignore/补丁）→ `安全等级修正`（Kyber-1024 + ML-DSA-87）
-  → `SLH-DSA 等级补全`（192s/192f/256s/256f）。
+  → `SLH-DSA 等级补全`（192s/192f/256s/256f）→ `sm2 工具补 SLH-DSA`。
 - 以下内容**不入库**（见 `.gitignore`）：
   - `go1.22.12/`（266M macOS 工具链，用 `patches/` 重建）
   - `dist/`（交付二进制，可重新编译）

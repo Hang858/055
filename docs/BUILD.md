@@ -119,8 +119,9 @@ SLH-DSA 由 CIRCL v1.6.3 提供，`schemes.ByName("SLH-DSA-SHA2-256f")` 即可�
 256s 1.31s、256f 0.14s；`pure-pq` 五条链全部生成+验签总耗时约 7s。
 `s`（小签名/慢）与 `f`（大签名/快）按需选择，本仓库链验证用 `s` 变体、批量出证书用 `f` 变体。
 
-> `pqcert/sm2` 是「SM2 与抗量子混合」工具，只覆盖 Dilithium2/3/5 + Kyber-512/768/1024，
-> 不含 SLH-DSA；SLH-DSA 由 `pure-pq` 与 `x509-multi` 覆盖。
+> 三个工具现在都覆盖 SLH-DSA：`pure-pq`（纯抗量子链，含「256 比特等级哈希签名链」）、
+> `x509-multi`（192f/256f 用户证书）、`sm2`（256 比特 SM2 + SLH-DSA 双重签名链）。
+> `gen-pq-chain` / `gen-sm2-chain` 只做外部 SM2/ML-DSA 公钥导入签发，不涉及 SLH-DSA。
 
 - 外部公钥数据：`pqcert/data/public_keys.txt`（含 `[SM2]`、`[ML-DSA-44]`、`[ML-DSA-44-Signature]`、`[PQ-ECC-Signature]` 段）
 - 示例输出：`pqcert/certs-sample/`（`mldsa_root.pem`、`mldsa_user.pem`、`sm2_root.pem`、`sm2_user.pem`）
