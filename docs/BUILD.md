@@ -68,6 +68,30 @@ GOOS=windows GOARCH=amd64 go build -o ../../dist/tls/client/windows_client.exe  
 - 另有多份历史参考实现：`tls-hybrid/server/example.go`（`main1()`，不参与编译入口）、
   `tls-hybrid/client/legacy/`、`tls-hybrid/e2e/example.go`
 
+### 逐组测试（`-kex`）
+
+客户端与服务端都支持 `-kex`，只启用指定的一组，便于按验收大纲逐组验证：
+
+| `-kex` 取值 | 量子安全等级 |
+|---|---|
+| `SM2Kyber512Draft00` | 128 比特 |
+| `X25519Kyber512Draft00` | 128 比特 |
+| `X25519Kyber768Draft00` | 192 比特 |
+| `SM2Kyber768Draft00` | 192 比特 |
+| **`X25519Kyber1024Draft00`** | **256 比特** |
+| **`SM2Kyber1024Draft00`** | **256 比特** |
+| `X25519` | 传统算法（兼容性回退） |
+
+端到端自测示例（已实测通过）：
+
+```sh
+cd tls-hybrid/e2e
+go build -o /tmp/e2e .
+/tmp/e2e -cert server_root_cert.pem -key server_root_key.pem \
+         -ca server_root_cert1.pem -kex X25519Kyber1024Draft00 -addr localhost:8099
+# 输出：🔑 使用密钥交换算法: X25519Kyber1024Draft00 (混合后量子, 256 比特量子安全等级)
+```
+
 ---
 
 ## C. 构建抗量子证书生成工具（pqcert）
@@ -75,16 +99,29 @@ GOOS=windows GOARCH=amd64 go build -o ../../dist/tls/client/windows_client.exe  
 不需要补丁工具链，Go 1.25+ 即可：
 
 ```sh
-cd pqcert/pure-pq        && go build .        # 纯抗量子链：Kyber / Dilithium / SPHINCS
-cd pqcert/sm2            && go build .        # SM2 与抗量子混合链
-cd pqcert/x509-multi     && go build .        # 多算法 X.509 链
+cd pqcert/pure-pq        && go build .        # 纯抗量子链：Kyber / Dilithium / SPHINCS / 256 比特等级链
+cd pqcert/sm2            && go build .        # SM2 与抗量子混合链（含 256 比特链）
+cd pqcert/x509-multi     && go build .        # 多算法 X.509 链（含 ML-DSA-87 / Kyber-1024 用户证书）
 cd pqcert/gen-pq-chain   && go run .          # 读 ../data/public_keys.txt，输出到 ../certs-sample
 cd pqcert/gen-sm2-chain  && go run .          # 同上（SM2 版）
 ```
 
+**量子安全等级覆盖（三个工具一致）**
+
+| 等级 | 签名算法 | KEM 算法 |
+|---|---|---|
+| 128 比特 | ML-DSA-44 / Dilithium2 | Kyber-512 |
+| 192 比特 | ML-DSA-65 / Dilithium3 | Kyber-768 |
+| **256 比特** | **ML-DSA-87 / Dilithium5** | **Kyber-1024** |
+
 - 外部公钥数据：`pqcert/data/public_keys.txt`（含 `[SM2]`、`[ML-DSA-44]`、`[ML-DSA-44-Signature]`、`[PQ-ECC-Signature]` 段）
 - 示例输出：`pqcert/certs-sample/`（`mldsa_root.pem`、`mldsa_user.pem`、`sm2_root.pem`、`sm2_user.pem`）
-- 各工具自身目录下的 `certs*`、`pq_x509_certs/`、`pure_pq_certs/` 是运行时生成的样例输出
+- 各工具自身目录下的 `certs*`、`pq_x509_certs/`、`pure_pq_certs/` 是运行时生成的样例输出；
+  256 比特等级的产物文件名带 `mldsa87` / `kyber1024` 标识
+
+> OID 说明：ML-DSA OID 沿用项目既有编法（`2.16.840.1.101.3.4.11/12/13`）。
+> 若要严格对齐最终标准草案，ML-DSA-44/65/87 应为 `2.16.840.1.101.3.4.3.17/18/19`，
+> 但改动会影响已有证书，需评估后再统一。
 
 ---
 
@@ -105,7 +142,9 @@ cd pqcert/gen-sm2-chain  && go run .          # 同上（SM2 版）
    即：这份 `internal/crypto/mytls` 目前是"挂空挡"的 fork，需要先接进入口再谈换算法。
 
 2. **HQC 尚未接入**：仓库里只有 `//NextProtos: []string{"pq-HQC-128"}` 两行注释，
-   没有任何 HQC 实现；CIRCL 也不提供 HQC，所以只能走 liboqs。
+   没有任何 HQC 实现；CIRCL 也不提供 HQC，只能走 liboqs。
+   完整的最小改造路线（含 `kem.Scheme` 适配器要实现的 13 个方法、build tag 方案、
+   平台构建与风险）见 **[`HQC-TLS-最小改造路线.md`](HQC-TLS-最小改造路线.md)**。
 
 ---
 

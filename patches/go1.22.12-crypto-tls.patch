@@ -355,8 +355,8 @@ diff -ruN a/src/crypto/tls/cfgo_test.go b/src/crypto/tls/cfgo_test.go
 +}
 diff -ruN a/src/crypto/tls/cfkem.go b/src/crypto/tls/cfkem.go
 --- a/src/crypto/tls/cfkem.go	1970-01-01 08:00:00.000000000 +0800
-+++ b/src/crypto/tls/cfkem.go	2025-03-17 11:59:42.000000000 +0800
-@@ -0,0 +1,108 @@
++++ b/src/crypto/tls/cfkem.go	2026-09-18 11:44:19.915254376 +0800
+@@ -0,0 +1,115 @@
 +// Copyright 2022 Cloudflare, Inc. All rights reserved. Use of this source code
 +// is governed by a BSD-style license that can be found in the LICENSE file.
 +//
@@ -405,6 +405,9 @@ diff -ruN a/src/crypto/tls/cfkem.go b/src/crypto/tls/cfkem.go
 +	//write by drew
 +	SM2Kyber512Draft00       = CurveID(0xfe34)
 +	SM2Kyber768Draft00       = CurveID(0xfe35)
++	// 256 比特量子安全等级：Kyber-1024 混合组
++	X25519Kyber1024Draft00   = CurveID(0xfe36)
++	SM2Kyber1024Draft00      = CurveID(0xfe37)
 +	invalidCurveID           = CurveID(0)
 +
 +	// A key agreeement similar in size but purposefully incompatible with
@@ -433,6 +436,10 @@ diff -ruN a/src/crypto/tls/cfkem.go b/src/crypto/tls/cfkem.go
 +	    return hybrid.Kyber512sm2()
 +	case SM2Kyber768Draft00:
 +	    return hybrid.Kyber768sm2()
++	case X25519Kyber1024Draft00:
++		return hybrid.Kyber1024X25519()
++	case SM2Kyber1024Draft00:
++	    return hybrid.Kyber1024sm2()
 +	case DummyKex:
 +		return hpke.KEM_X25519_HKDF_SHA256.Scheme()
 +	}

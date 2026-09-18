@@ -13,11 +13,13 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/cloudflare/circl/kem/kyber/kyber1024"
 	"github.com/cloudflare/circl/kem/kyber/kyber512"
 	"github.com/cloudflare/circl/kem/kyber/kyber768"
 	"github.com/cloudflare/circl/sign"
 	mode2 "github.com/cloudflare/circl/sign/dilithium/mode2"
 	mode3 "github.com/cloudflare/circl/sign/dilithium/mode3"
+	mode5 "github.com/cloudflare/circl/sign/dilithium/mode5"
 	"github.com/cloudflare/circl/sign/schemes"
 )
 
@@ -30,6 +32,9 @@ const (
 	SPHINCS128f
 	Kyber512
 	Kyber768
+	// 256 比特量子安全等级
+	Dilithium5 // ML-DSA-87
+	Kyber1024
 )
 
 var (
@@ -86,6 +91,10 @@ func generateCAKey(algo PQAlgorithm) *PQKeyPair {
 		pk, sk, _ := mode3.GenerateKey(rand.Reader)
 		return &PQKeyPair{Algo: Dilithium3, SignSK: sk, SignPK: pk, PubBytes: pk.Bytes()}
 
+	case Dilithium5:
+		pk, sk, _ := mode5.GenerateKey(rand.Reader)
+		return &PQKeyPair{Algo: Dilithium5, SignSK: sk, SignPK: pk, PubBytes: pk.Bytes()}
+
 	case SPHINCS128s, SPHINCS128f:
 		scheme := getSPHINCSScheme(algo)
 		pk, sk, err := scheme.GenerateKey()
@@ -121,6 +130,11 @@ func generateEndEntityKey(algo PQAlgorithm) *PQKeyPair {
 		pubBytes, _ := pk.MarshalBinary()
 		return &PQKeyPair{Algo: Kyber768, KemPK: pk, KemSK: sk, PubBytes: pubBytes}
 
+	case Kyber1024:
+		pk, sk, _ := kyber1024.GenerateKeyPair(rand.Reader)
+		pubBytes, _ := pk.MarshalBinary()
+		return &PQKeyPair{Algo: Kyber1024, KemPK: pk, KemSK: sk, PubBytes: pubBytes}
+
 	case Dilithium2:
 		pk, sk, _ := mode2.GenerateKey(rand.Reader)
 		return &PQKeyPair{Algo: Dilithium2, SignPK: pk, SignSK: sk, PubBytes: pk.Bytes()}
@@ -128,6 +142,10 @@ func generateEndEntityKey(algo PQAlgorithm) *PQKeyPair {
 	case Dilithium3:
 		pk, sk, _ := mode3.GenerateKey(rand.Reader)
 		return &PQKeyPair{Algo: Dilithium3, SignPK: pk, SignSK: sk, PubBytes: pk.Bytes()}
+
+	case Dilithium5:
+		pk, sk, _ := mode5.GenerateKey(rand.Reader)
+		return &PQKeyPair{Algo: Dilithium5, SignPK: pk, SignSK: sk, PubBytes: pk.Bytes()}
 
 	case SPHINCS128s, SPHINCS128f:
 		scheme := getSPHINCSScheme(algo)
@@ -162,6 +180,11 @@ func pqSign(parentKey *PQKeyPair, tbs []byte) []byte {
 	case Dilithium3:
 		sig := make([]byte, mode3.SignatureSize)
 		mode3.SignTo(parentKey.SignSK.(*mode3.PrivateKey), tbs, sig)
+		return sig
+
+	case Dilithium5:
+		sig := make([]byte, mode5.SignatureSize)
+		mode5.SignTo(parentKey.SignSK.(*mode5.PrivateKey), tbs, sig)
 		return sig
 
 	case SPHINCS128s, SPHINCS128f:
@@ -404,6 +427,17 @@ func main() {
 	user6 := genEndEntity(i2RSA, i2Cert, i2PQ, SPHINCS128f, "user-sphincs128f")
 	printCert(user6, "用户证书 sphincs128f")
 	saveCert(user6, "user_sphincs128f.pem")
+
+	// 256 比特量子安全等级：ML-DSA-87/Dilithium5 签名 + Kyber-1024 KEM
+	fmt.Println("\n=== 256 比特量子安全等级用户证书 ===")
+
+	user7 := genEndEntity(i2RSA, i2Cert, i2PQ, Dilithium5, "user-mldsa87")
+	printCert(user7, "用户证书 ML-DSA-87/Dilithium5 (256 比特签名)")
+	saveCert(user7, "user_mldsa87.pem")
+
+	user8 := genEndEntity(i2RSA, i2Cert, i2PQ, Kyber1024, "user-kyber1024")
+	printCert(user8, "用户证书 Kyber-1024 (256 比特 KEM)")
+	saveCert(user8, "user_kyber1024.pem")
 
 	fmt.Println("\n===== 标准 RSA 证书链验签 =====")
 	roots := x509.NewCertPool()

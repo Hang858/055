@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/cloudflare/circl/kem/kyber/kyber1024"
 	"github.com/cloudflare/circl/kem/kyber/kyber512"
 	"github.com/cloudflare/circl/kem/kyber/kyber768"
 	"github.com/cloudflare/circl/sign"
 	"github.com/cloudflare/circl/sign/dilithium/mode2"
 	"github.com/cloudflare/circl/sign/dilithium/mode3"
+	"github.com/cloudflare/circl/sign/dilithium/mode5"
 	"github.com/cloudflare/circl/sign/schemes"
 )
 
@@ -67,6 +69,10 @@ var (
 	oidMLDSA65  = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 12}
 	oidKyber512 = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 40801, 5, 1, 1}
 	oidKyber768 = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 40801, 5, 1, 2}
+
+	// 256 比特量子安全等级（与 ML-DSA-44/Kyber-512 的 128 比特等级配对）
+	oidMLDSA87   = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 13}
+	oidKyber1024 = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 40801, 5, 1, 3}
 
 	// 实验用 SPHINCS / SLH-DSA OID
 	oidSLHDSA128s = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 10, 1}
@@ -159,6 +165,16 @@ func generateSignKey(algoOID asn1.ObjectIdentifier) *PQKeyPair {
 			PubBytes: pk.Bytes(),
 		}
 
+	// 256 比特量子安全等级签名
+	case algoOID.Equal(oidMLDSA87):
+		pk, sk, _ := mode5.GenerateKey(rand.Reader)
+		return &PQKeyPair{
+			AlgoOID:  algoOID,
+			SignSK:   sk,
+			SignPK:   pk,
+			PubBytes: pk.Bytes(),
+		}
+
 	case isSLHDSA(algoOID):
 		scheme := getSLHDSAScheme(algoOID)
 		pk, sk, err := scheme.GenerateKey()
@@ -194,7 +210,13 @@ func generateEndKey(algoOID asn1.ObjectIdentifier) *PQKeyPair {
 		buf, _ := pk.MarshalBinary()
 		return &PQKeyPair{AlgoOID: algoOID, KemSK: sk, PubBytes: buf}
 
-	case algoOID.Equal(oidMLDSA44), algoOID.Equal(oidMLDSA65), isSLHDSA(algoOID):
+	// 256 比特量子安全等级 KEM
+	case algoOID.Equal(oidKyber1024):
+		pk, sk, _ := kyber1024.GenerateKeyPair(rand.Reader)
+		buf, _ := pk.MarshalBinary()
+		return &PQKeyPair{AlgoOID: algoOID, KemSK: sk, PubBytes: buf}
+
+	case algoOID.Equal(oidMLDSA44), algoOID.Equal(oidMLDSA65), algoOID.Equal(oidMLDSA87), isSLHDSA(algoOID):
 		return generateSignKey(algoOID)
 
 	default:
@@ -214,6 +236,11 @@ func pqSign(sk interface{}, algoOID asn1.ObjectIdentifier, data []byte) []byte {
 		mode3.SignTo(sk.(*mode3.PrivateKey), data, sig)
 		return sig
 
+	case algoOID.Equal(oidMLDSA87):
+		sig := make([]byte, mode5.SignatureSize)
+		mode5.SignTo(sk.(*mode5.PrivateKey), data, sig)
+		return sig
+
 	case isSLHDSA(algoOID):
 		scheme := getSLHDSAScheme(algoOID)
 		return scheme.Sign(sk.(sign.PrivateKey), data, nil)
@@ -230,6 +257,9 @@ func pqVerify(pk interface{}, algoOID asn1.ObjectIdentifier, data, sig []byte) b
 
 	case algoOID.Equal(oidMLDSA65):
 		return mode3.Verify(pk.(*mode3.PublicKey), data, sig)
+
+	case algoOID.Equal(oidMLDSA87):
+		return mode5.Verify(pk.(*mode5.PublicKey), data, sig)
 
 	case isSLHDSA(algoOID):
 		scheme := getSLHDSAScheme(algoOID)
@@ -322,6 +352,8 @@ func oidToName(oid asn1.ObjectIdentifier) string {
 		return "ML-DSA-44 / Dilithium2"
 	case oid.Equal(oidMLDSA65):
 		return "ML-DSA-65 / Dilithium3"
+	case oid.Equal(oidMLDSA87):
+		return "ML-DSA-87 / Dilithium5（256 比特量子安全等级）"
 	case oid.Equal(oidSLHDSA128s):
 		return "SLH-DSA-SHA2-128s / SPHINCS+"
 	case oid.Equal(oidSLHDSA128f):
@@ -330,6 +362,8 @@ func oidToName(oid asn1.ObjectIdentifier) string {
 		return "Kyber-512"
 	case oid.Equal(oidKyber768):
 		return "Kyber-768"
+	case oid.Equal(oidKyber1024):
+		return "Kyber-1024（256 比特量子安全等级）"
 	default:
 		return oid.String()
 	}
@@ -505,7 +539,7 @@ func buildChain(
 
 func main() {
 	ensureDir()
-	fmt.Println("=== 三套纯抗量子 X.509 v3 证书链：Kyber / Dilithium / SPHINCS ===")
+	fmt.Println("=== 四套纯抗量子 X.509 v3 证书链：Kyber / Dilithium / SPHINCS / 256比特等级 ===")
 
 	// 1. Kyber 用户证书链：
 	// Root 和 Intermediate 用 Dilithium 签名，User 公钥是 Kyber
@@ -552,12 +586,33 @@ func main() {
 		"user_sphincs.pem",
 	)
 
+	// 4. 256 比特量子安全等级证书链：
+	// Root、Intermediate 用 ML-DSA-87 签名，User 公钥是 Kyber-1024
+	level256OK := buildChain(
+		"链4：256 比特量子安全等级链（ML-DSA-87 签名 + Kyber-1024 用户公钥）",
+		"Level256-Chain-Root-MLDSA87",
+		"Level256-Chain-Intermediate-MLDSA87",
+		"user-kyber1024",
+		oidMLDSA87,
+		oidMLDSA87,
+		oidKyber1024,
+		"level256_chain_root_mldsa87.pem",
+		"level256_chain_intermediate_mldsa87.pem",
+		"user_kyber1024.pem",
+	)
+
 	fmt.Println("\n==================================================")
 	fmt.Println("🎉 最终结果")
 	fmt.Println("==================================================")
 	fmt.Printf("Kyber用户证书链可信: %v\n", kyberOK)
 	fmt.Printf("Dilithium证书链可信: %v\n", dilithiumOK)
 	fmt.Printf("SPHINCS证书链可信: %v\n", sphincsOK)
+	fmt.Printf("256比特等级链(ML-DSA-87)可信: %v\n", level256OK)
+
+	fmt.Println("\n量子安全等级覆盖：")
+	fmt.Println("  128 比特：ML-DSA-44/Dilithium2（签名）、Kyber-512（KEM）")
+	fmt.Println("  192 比特：ML-DSA-65/Dilithium3（签名）、Kyber-768（KEM）")
+	fmt.Println("  256 比特：ML-DSA-87/Dilithium5（签名）、Kyber-1024（KEM）")
 
 	fmt.Println("\n✅ 全部完成！")
 }

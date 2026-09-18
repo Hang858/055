@@ -14,10 +14,12 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/cloudflare/circl/kem/kyber/kyber1024"
 	"github.com/cloudflare/circl/kem/kyber/kyber512"
 	"github.com/cloudflare/circl/kem/kyber/kyber768"
 	mode2 "github.com/cloudflare/circl/sign/dilithium/mode2"
 	mode3 "github.com/cloudflare/circl/sign/dilithium/mode3"
+	mode5 "github.com/cloudflare/circl/sign/dilithium/mode5"
 	"github.com/tjfoc/gmsm/sm2"
 	"github.com/tjfoc/gmsm/x509"
 )
@@ -30,6 +32,9 @@ const (
 	Dilithium3
 	Kyber512
 	Kyber768
+	// 256 比特量子安全等级
+	Dilithium5 // ML-DSA-87
+	Kyber1024
 )
 
 // 自定义扩展OID
@@ -65,6 +70,9 @@ func generateCAKey(algo PQAlgorithm) *PQKeyPair {
 	case Dilithium3:
 		pk, sk, _ := mode3.GenerateKey(rand.Reader)
 		return &PQKeyPair{Algo: Dilithium3, SignSK: sk, SignPK: pk, PubBytes: pk.Bytes()}
+	case Dilithium5:
+		pk, sk, _ := mode5.GenerateKey(rand.Reader)
+		return &PQKeyPair{Algo: Dilithium5, SignSK: sk, SignPK: pk, PubBytes: pk.Bytes()}
 	default:
 		panic("不支持的算法")
 	}
@@ -80,12 +88,19 @@ func generateEndEntityKey(algo PQAlgorithm) *PQKeyPair {
 		pk, sk, _ := kyber768.GenerateKeyPair(rand.Reader)
 		bs, _ := pk.MarshalBinary()
 		return &PQKeyPair{Algo: Kyber768, KemPK: pk, KemSK: sk, PubBytes: bs}
+	case Kyber1024:
+		pk, sk, _ := kyber1024.GenerateKeyPair(rand.Reader)
+		bs, _ := pk.MarshalBinary()
+		return &PQKeyPair{Algo: Kyber1024, KemPK: pk, KemSK: sk, PubBytes: bs}
 	case Dilithium2:
 		pk, sk, _ := mode2.GenerateKey(rand.Reader)
 		return &PQKeyPair{Algo: Dilithium2, SignSK: sk, SignPK: pk, PubBytes: pk.Bytes()}
 	case Dilithium3:
 		pk, sk, _ := mode3.GenerateKey(rand.Reader)
 		return &PQKeyPair{Algo: Dilithium3, SignSK: sk, SignPK: pk, PubBytes: pk.Bytes()}
+	case Dilithium5:
+		pk, sk, _ := mode5.GenerateKey(rand.Reader)
+		return &PQKeyPair{Algo: Dilithium5, SignSK: sk, SignPK: pk, PubBytes: pk.Bytes()}
 	default:
 		panic("不支持的算法")
 	}
@@ -100,6 +115,10 @@ func pqSign(parentKey *PQKeyPair, tbs []byte) []byte {
 	case Dilithium3:
 		sig := make([]byte, mode3.SignatureSize)
 		mode3.SignTo(parentKey.SignSK.(*mode3.PrivateKey), tbs, sig)
+		return sig
+	case Dilithium5:
+		sig := make([]byte, mode5.SignatureSize)
+		mode5.SignTo(parentKey.SignSK.(*mode5.PrivateKey), tbs, sig)
 		return sig
 	default:
 		panic("不支持的签名算法")
@@ -123,6 +142,12 @@ func pqVerify(algo PQAlgorithm, pubBytes, originalTBS, sig []byte) bool {
 			return false
 		}
 		return mode3.Verify(&pk, originalTBS, sig)
+	case Dilithium5:
+		var pk mode5.PublicKey
+		if err := pk.UnmarshalBinary(pubBytes); err != nil {
+			return false
+		}
+		return mode5.Verify(&pk, originalTBS, sig)
 	default:
 		return false
 	}
@@ -512,6 +537,31 @@ func main() {
 
 	// 验签
 	verifyAll(leafCert, leafTBS, inter2Cert, inter2TBS, inter1Cert, inter1TBS, rootCert, rootTBS, rootAlgo, inter1Algo, inter2Algo)
+
+	// ==================== 256 比特量子安全等级链 ====================
+	fmt.Println("\n\n=== 256 比特量子安全等级链（ML-DSA-87/Dilithium5 签名 + Kyber-1024）===")
+	root256SK, root256Cert, root256PQ, _ := genRootCA(Dilithium5)
+	printCert(root256Cert, "256比特根证书")
+	saveCert(root256Cert, "root_mldsa87.pem")
+	saveSM2PrivateKey(root256SK, "root_mldsa87_sm2.key")
+	savePQPrivateKey(root256PQ.SignSK, "root_pq_mldsa87.key")
+
+	inter256SK, inter256Cert, inter256PQ, _ := genIntermediate(root256SK, root256Cert, root256PQ, "Level256-Intermediate", Dilithium5)
+	printCert(inter256Cert, "256比特中间证书")
+	saveCert(inter256Cert, "inter_mldsa87.pem")
+	saveSM2PrivateKey(inter256SK, "inter_mldsa87_sm2.key")
+	savePQPrivateKey(inter256PQ.SignSK, "inter_pq_mldsa87.key")
+
+	leaf256Cert, leaf256SK, leaf256PQ, _ := genEndEntity(inter256SK, inter256Cert, inter256PQ, Kyber1024, "User-256")
+	printCert(leaf256Cert, "256比特终端证书")
+	saveCert(leaf256Cert, "user_kyber1024.pem")
+	saveSM2PrivateKey(leaf256SK, "user_kyber1024_sm2.key")
+	savePQPrivateKey(leaf256PQ.KemSK, "user_pq_kyber1024.key")
+
+	fmt.Println("\n🔍 256 比特链验签（ML-DSA-87 签名 / Kyber-1024 用户公钥）")
+	fmt.Println("  根证书自签名验证:      ", root256Cert.CheckSignatureFrom(root256Cert))
+	fmt.Println("  中间证书由根签名验证:  ", inter256Cert.CheckSignatureFrom(root256Cert))
+	fmt.Println("  终端证书由中间签名验证:", leaf256Cert.CheckSignatureFrom(inter256Cert))
 
 	fmt.Println("\n🎉 全部完成！")
 }

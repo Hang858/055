@@ -34,6 +34,7 @@ var (
 	serverAddr  string
 	postMessage string
 	showKex     bool
+	kexName     string
 )
 
 func init() {
@@ -43,6 +44,37 @@ func init() {
 	flag.StringVar(&serverAddr, "addr", "localhost:8080", "服务器地址")
 	flag.StringVar(&postMessage, "msg", "Secret quantum-safe message", "客户端发送的消息")
 	flag.BoolVar(&showKex, "showkex", true, "显示协商的密钥交换算法")
+	flag.StringVar(&kexName, "kex", "", "只启用指定的密钥交换组（默认启用全部）")
+}
+
+// supportedKEX 是源码库支持的混合密钥交换组，按量子安全等级标注。
+var supportedKEX = []tls.CurveID{
+	tls.SM2Kyber512Draft00,     // 128 比特量子安全等级
+	tls.X25519Kyber512Draft00,  // 128 比特量子安全等级
+	tls.X25519Kyber1024Draft00, // 256 比特量子安全等级
+	tls.SM2Kyber1024Draft00,    // 256 比特量子安全等级
+	tls.X25519Kyber768Draft00,  // 192 比特
+	tls.X25519,                 // 传统算法，用于兼容性回退
+}
+
+// selectKEX 依据 -kex 参数选择启用哪些密钥交换组。
+func selectKEX() []tls.CurveID {
+	if kexName == "" {
+		return supportedKEX
+	}
+	byName := map[string]tls.CurveID{
+		"SM2Kyber512Draft00":     tls.SM2Kyber512Draft00,
+		"X25519Kyber512Draft00":  tls.X25519Kyber512Draft00,
+		"X25519Kyber1024Draft00": tls.X25519Kyber1024Draft00,
+		"SM2Kyber1024Draft00":    tls.SM2Kyber1024Draft00,
+		"X25519Kyber768Draft00":  tls.X25519Kyber768Draft00,
+		"X25519":                 tls.X25519,
+	}
+	id, ok := byName[kexName]
+	if !ok {
+		log.Fatalf("未知密钥交换组 %q；可选：SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber1024Draft00、SM2Kyber1024Draft00、X25519Kyber768Draft00、X25519", kexName)
+	}
+	return []tls.CurveID{id}
 }
 
 func encrypt(key []byte, plaintext []byte) ([]byte, error) {
@@ -139,14 +171,9 @@ func runServer(wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	config := &tls.Config{
-		CurvePreferences: []tls.CurveID{
-			tls.X25519Kyber512Draft00,
-			tls.SM2Kyber512Draft00,
-			tls.X25519Kyber768Draft00,
-			tls.X25519,
-		},
-		MinVersion: tls.VersionTLS13,
-		MaxVersion: tls.VersionTLS13,
+		CurvePreferences: selectKEX(),
+		MinVersion:       tls.VersionTLS13,
+		MaxVersion:       tls.VersionTLS13,
 	}
 
 	http.HandleFunc("/", handler)
@@ -190,14 +217,9 @@ func runClient(wg *sync.WaitGroup) {
 	config := &tls.Config{
 		InsecureSkipVerify: true, // 核心改动：跳过服务器证书验证
 		RootCAs:            caCertPool,
-		CurvePreferences: []tls.CurveID{
-			tls.X25519Kyber512Draft00,
-			tls.SM2Kyber512Draft00,
-			tls.X25519Kyber768Draft00,
-			tls.X25519,
-		},
-		MinVersion: tls.VersionTLS13,
-		MaxVersion: tls.VersionTLS13,
+		CurvePreferences:   selectKEX(),
+		MinVersion:         tls.VersionTLS13,
+		MaxVersion:         tls.VersionTLS13,
 	}
 
 	client := &http.Client{
@@ -220,6 +242,10 @@ func runClient(wg *sync.WaitGroup) {
 				log.Println("🔑 使用密钥交换算法: SM2Kyber512Draft00 (混合后量子)")
 			case tls.X25519Kyber768Draft00:
 				log.Println("🔑 使用密钥交换算法: X25519Kyber768Draft00 (混合后量子)")
+			case tls.X25519Kyber1024Draft00:
+				log.Println("🔑 使用密钥交换算法: X25519Kyber1024Draft00 (混合后量子, 256 比特量子安全等级)")
+			case tls.SM2Kyber1024Draft00:
+				log.Println("🔑 使用密钥交换算法: SM2Kyber1024Draft00 (混合后量子, 256 比特量子安全等级)")
 			case tls.X25519:
 				log.Println("🔑 使用密钥交换算法: X25519 (传统)")
 			}

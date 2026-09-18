@@ -49,9 +49,20 @@ GOROOT_BOOTSTRAP=/usr/lib/go-1.22 ./src/make.bash
 
 | 类别 | 已实现 | 备注 |
 |---|---|---|
-| 混合密钥交换 | `X25519Kyber512Draft00`、`X25519Kyber768Draft00`、`X25519Kyber768Draft00Old`、`P256Kyber768Draft00`、`SM2Kyber512Draft00`、`SM2Kyber768Draft00` | 见 `cfkem.go`；`X25519MLKEM768` 只定义了码点 |
+| 混合密钥交换（128 比特） | `X25519Kyber512Draft00`(0xfe30)、`SM2Kyber512Draft00`(0xfe34) | 见 `cfkem.go` |
+| 混合密钥交换（192 比特） | `X25519Kyber768Draft00`(0x6399)、`X25519Kyber768Draft00Old`(0xfe31)、`P256Kyber768Draft00`(0xfe32)、`SM2Kyber768Draft00`(0xfe35) | |
+| 混合密钥交换（**256 比特**） | **`X25519Kyber1024Draft00`(0xfe36)、`SM2Kyber1024Draft00`(0xfe37)** | 本次新增。X25519 配对由 `hybrid.Kyber1024X25519()` 提供（CIRCL 原本只有 Kyber1024-X448 / Kyber1024-sm2） |
+| 其他 | `X25519MLKEM768`(0x11ec) | 只定义了码点，示例未启用 |
 | 签名 | `Ed25519+Dilithium2/3`（`EdDilithium2/3`） | 需 `Config.PQSignatureSchemesEnabled = true`，默认关闭 |
-| **未支持** | **HQC（任意参数集）** | CIRCL 不提供 HQC；若要接入需走 liboqs，见 `../docs/BUILD.md` D 节 |
+| **未支持** | **HQC（任意参数集）** | CIRCL 不提供 HQC；接入路线见 `../docs/HQC-TLS-最小改造路线.md` |
+
+`tls-hybrid` 的客户端与服务端都支持 `-kex` 参数只启用某一组，便于逐组测试：
+
+```sh
+./e2e -kex X25519Kyber1024Draft00   # 256 比特
+./e2e -kex X25519Kyber512Draft00    # 128 比特
+./e2e -kex SM2Kyber512Draft00       # 国密 128 比特
+```
 
 ## 遗留（未纳入补丁）
 

@@ -9,9 +9,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"time"
 )
@@ -69,7 +71,40 @@ func validateCertExpiry(certs []*x509.Certificate) error {
 	return nil
 }
 
+// supportedKEX 是源码库支持的混合密钥交换组，按量子安全等级标注。
+var supportedKEX = []tls.CurveID{
+	tls.SM2Kyber512Draft00,     // 128 比特量子安全等级
+	tls.X25519Kyber512Draft00,  // 128 比特量子安全等级
+	tls.X25519Kyber1024Draft00, // 256 比特量子安全等级
+	tls.SM2Kyber1024Draft00,    // 256 比特量子安全等级
+	tls.X25519Kyber768Draft00,  // 192 比特
+	tls.X25519,                 // 传统算法，用于兼容性回退
+}
+
+var kexFlag = flag.String("kex", "", "只启用指定的密钥交换组（默认启用全部）")
+
+// selectKEX 依据 -kex 参数选择启用哪些密钥交换组。
+func selectKEX() []tls.CurveID {
+	if *kexFlag == "" {
+		return supportedKEX
+	}
+	byName := map[string]tls.CurveID{
+		"SM2Kyber512Draft00":     tls.SM2Kyber512Draft00,
+		"X25519Kyber512Draft00":  tls.X25519Kyber512Draft00,
+		"X25519Kyber1024Draft00": tls.X25519Kyber1024Draft00,
+		"SM2Kyber1024Draft00":    tls.SM2Kyber1024Draft00,
+		"X25519Kyber768Draft00":  tls.X25519Kyber768Draft00,
+		"X25519":                 tls.X25519,
+	}
+	id, ok := byName[*kexFlag]
+	if !ok {
+		log.Fatalf("未知密钥交换组 %q；可选：SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber1024Draft00、SM2Kyber1024Draft00、X25519Kyber768Draft00、X25519", *kexFlag)
+	}
+	return []tls.CurveID{id}
+}
+
 func main() {
+	flag.Parse()
 
 	caCert, err := ioutil.ReadFile("server.crt")
 	if err != nil {
@@ -84,14 +119,9 @@ func main() {
 	config := &tls.Config{
 		InsecureSkipVerify: true,
 		RootCAs:            caCertPool, // 指定信任的CA证书池
-		CurvePreferences: []tls.CurveID{
-			//tls.X25519Kyber512Draft00,
-			tls.SM2Kyber512Draft00,
-			tls.X25519Kyber768Draft00,
-			tls.X25519,
-		},
-		MinVersion: tls.VersionTLS13,
-		MaxVersion: tls.VersionTLS13,
+		CurvePreferences:   selectKEX(),
+		MinVersion:         tls.VersionTLS13,
+		MaxVersion:         tls.VersionTLS13,
 	}
 
 	client := &http.Client{
@@ -114,6 +144,10 @@ func main() {
 					fmt.Println("Used Kyber512sm2")
 				case tls.X25519Kyber768Draft00:
 					fmt.Println("Used X25519Kyber768Draft00")
+				case tls.X25519Kyber1024Draft00:
+					fmt.Println("Used X25519Kyber1024Draft00 (256 比特量子安全等级)")
+				case tls.SM2Kyber1024Draft00:
+					fmt.Println("Used SM2Kyber1024Draft00 (256 比特量子安全等级)")
 				case tls.X25519:
 					fmt.Println("Used X25519")
 				}
