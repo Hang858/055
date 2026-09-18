@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync" // Import sync for WaitGroup
 	"time"
+	"unicode/utf8"
 )
 
 // 错误类型定义
@@ -120,14 +121,22 @@ const kexHelp = "SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber768Draf
 	"SM2Kyber768Draft00、X25519Kyber1024Draft00、SM2Kyber1024Draft00、" +
 	"X25519HQC-128、X25519HQC-256、DummyKex、X25519（可用逗号分隔多个，顺序即偏好）"
 
-// displayBytes 便于日志展示：可打印文本直接输出，二进制转十六进制。
+// displayBytes 便于日志展示：合法且可打印的 UTF-8 文本直接输出（含中文），
+// 其余（真正的二进制）转十六进制。
 func displayBytes(b []byte) string {
-	for _, c := range b {
-		if c < 0x20 || c > 0x7e {
-			return fmt.Sprintf("(二进制 %d 字节) %x", len(b), b)
+	if utf8.Valid(b) {
+		printable := true
+		for _, r := range string(b) {
+			if r < 0x20 && r != '\t' && r != '\n' && r != '\r' {
+				printable = false
+				break
+			}
+		}
+		if printable {
+			return string(b)
 		}
 	}
-	return string(b)
+	return fmt.Sprintf("(二进制 %d 字节) %x", len(b), b)
 }
 
 func encrypt(key []byte, plaintext []byte) ([]byte, error) {
