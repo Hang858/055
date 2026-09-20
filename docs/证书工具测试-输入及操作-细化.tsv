@@ -1,0 +1,76 @@
+用例标识	用例名称	序号	输入及操作	期望结果与评估标准	实测结果
+ZS-1-1	RSA 与抗量子算法混合证书链生成测试	1.	【项目根】运行 RSA 混合证书生成程序：( cd pqcert/x509-multi && ../../.build/pqcert/x509-multi )	程序运行成功、无异常退出，结束打印 ✅ 标准 X509 证书链验证成功	退出码 0；打印 ✅ 标准 X509 证书链验证成功
+ZS-1-1	RSA 与抗量子算法混合证书链生成测试	2.	检查输出目录：ls -l pqcert/x509-multi/certs/ | wc -l	生成根证书、两级中间 CA 证书、终端实体证书及对应私钥，证书文件存在且非空	共 25 个文件：root-ca.pem、intermediate1-ca.pem、intermediate2-ca.pem、end-entity.pem 及各自私钥，另含 10 张抗量子用户证书
+ZS-1-1	RSA 与抗量子算法混合证书链生成测试	3.	解析并验证证书链：openssl x509 -in pqcert/x509-multi/certs/root-ca.pem -noout -subject -issuer -dates；cat pqcert/x509-multi/certs/intermediate1-ca.pem pqcert/x509-multi/certs/intermediate2-ca.pem > .build/tmp/rsa-chain.pem && openssl verify -CAfile pqcert/x509-multi/certs/root-ca.pem -untrusted .build/tmp/rsa-chain.pem pqcert/x509-multi/certs/end-entity.pem	基础字段正确；根证书自签名、中间证书由上级签发、终端证书由中间签发，链验签输出 end-entity.pem: OK；证书中含抗量子公钥/签名扩展字段	基础字段正确（CN = PQ-Root-CA 自签）；openssl verify 输出 pqcert/x509-multi/certs/end-entity.pem: OK；扩展 OID 1.3.6.1.4.1.54321.1.1 与 .1.2 各出现 1 次
+ZS-1-2	SM2 与抗量子算法混合证书链生成测试	1.	【项目根】运行 SM2 混合证书生成程序：( cd pqcert/sm2 && ../../.build/pqcert/sm2 )	程序运行成功、无异常退出，并打印各条链的验签结果	退出码 0
+ZS-1-2	SM2 与抗量子算法混合证书链生成测试	2.	检查输出目录：ls -l pqcert/sm2/certs_sm2/ | wc -l	成功生成根证书、中间 CA 证书、终端实体证书，以及对应 SM2 私钥和抗量子私钥文件	共 37 个文件，含 root.pem/inter1.pem/inter2.pem/user.pem、root_sm2.key、inter_pq_dilithium3.key、user_pq_kyber1024.key 等
+ZS-1-2	SM2 与抗量子算法混合证书链生成测试	3.	查看程序输出中的 SM2 链验签与抗量子链验签结果：( cd pqcert/sm2 && ../../.build/pqcert/sm2 ) | grep -E "根自签|由根|由中间|抗量子"	SM2 证书链验签通过（CheckSignatureFrom 返回 nil），抗量子签名验签返回 true	SM2 根自签/中间/终端均为 <nil>（成功）；抗量子(SLH-DSA-256) 根自签/中间/终端: true
+ZS-1-3	Kyber 用户证书链生成测试	1.	【项目根】运行纯抗量子证书链生成程序：( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq )	程序运行成功、无异常退出（退出码 0）	退出码 0
+ZS-1-3	Kyber 用户证书链生成测试	2.	检查 Kyber 用户证书链输出文件：ls pqcert/pure-pq/pq_x509_certs/ | grep -i kyber	生成 Kyber 链根证书、中间证书、用户证书及对应私钥文件，存在且非空	kyber_chain_root_dilithium.pem、kyber_chain_intermediate_dilithium.pem、user-kyber512.pem、user_kyber768.pem、user_kyber512.key 等齐备
+ZS-1-3	Kyber 用户证书链生成测试	3.	查看程序结尾的链验签汇总	Kyber用户证书链可信: true（用户证书公钥算法为 Kyber，根自签/中间/终端签发关系验证通过）	打印 Kyber用户证书链可信: true
+ZS-1-4	Dilithium 证书链生成测试	1.	运行纯抗量子证书链生成程序：( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq )	程序运行成功、无异常退出	退出码 0
+ZS-1-4	Dilithium 证书链生成测试	2.	检查 Dilithium 证书链输出文件：ls pqcert/pure-pq/pq_x509_certs/ | grep -Ei "dilithium|mldsa"	生成 Dilithium 根证书、中间证书、用户证书及对应私钥文件，存在且非空	dilithium_chain_root.pem、dilithium_chain_intermediate.pem、user_dilithium.pem、user-dilithium2.pem、user-dilithium3.pem、user_mldsa87.pem 等齐备
+ZS-1-4	Dilithium 证书链生成测试	3.	查看程序结尾的链验签汇总	证书签名算法与公钥算法为 Dilithium/ML-DSA 类算法，链签发关系验证通过	打印 Dilithium证书链可信: true、256比特等级链(ML-DSA-87)可信: true
+ZS-1-5	SPHINCS/SLH-DSA 证书链生成测试	1.	运行纯抗量子证书链生成程序：( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq )	程序运行成功、无异常退出	退出码 0
+ZS-1-5	SPHINCS/SLH-DSA 证书链生成测试	2.	检查 SPHINCS/SLH-DSA 证书链输出文件：ls pqcert/pure-pq/pq_x509_certs/ | grep -i -E "sphincs|slhdsa"	生成 SPHINCS/SLH-DSA 根证书、中间证书、用户证书及对应私钥文件，存在且非空	sphincs_chain_root.pem、sphincs_chain_intermediate.pem、user_sphincs.pem、slhdsa256_chain_root.pem、user_slhdsa256s.pem 等齐备
+ZS-1-5	SPHINCS/SLH-DSA 证书链生成测试	3.	查看程序结尾的链验签汇总	证书签名算法与公钥算法为 SPHINCS/SLH-DSA 类算法，链签发关系验证通过	打印 SPHINCS证书链可信: true、256比特哈希签名链(SLH-DSA-256s)可信: true
+ZS-1-6	RSA、SM2 密钥生成测试	1.	分别运行两个混合证书生成程序：( cd pqcert/x509-multi && ../../.build/pqcert/x509-multi )；( cd pqcert/sm2 && ../../.build/pqcert/sm2 )	两个程序均运行成功，无密钥生成相关异常	均退出码 0
+ZS-1-6	RSA、SM2 密钥生成测试	2.	检查密钥文件：openssl rsa -in pqcert/x509-multi/certs/root-ca-key.pem -noout -check；head -1 pqcert/sm2/certs_sm2/root_sm2.key	RSA 私钥可用于证书签发（RSA key ok）；SM2 私钥文件生成成功、存在且非空	RSA key ok；SM2 私钥首行为 -----BEGIN PRIVATE KEY-----
+ZS-1-6	RSA、SM2 密钥生成测试	3.	验证签名关系：openssl verify -CAfile pqcert/x509-multi/certs/root-ca.pem pqcert/x509-multi/certs/intermediate1-ca.pem；SM2 链看程序输出的 Root 自签/中间/终端 结果	RSA 证书链和 SM2 证书链签名验证通过，说明生成的密钥可用于签发与验签流程	intermediate1-ca.pem: OK；SM2 链程序内验签为 <nil>（成功）
+ZS-1-7	Dilithium 签名密钥生成测试	1.	运行包含 Dilithium 算法的证书生成程序：( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq )	程序运行成功，无 Dilithium 密钥生成异常	退出码 0
+ZS-1-7	Dilithium 签名密钥生成测试	2.	检查 Dilithium 私钥与证书文件：ls pqcert/pure-pq/pq_x509_certs/ | grep -Ei "dilithium|mldsa"	Dilithium2/3、ML-DSA-87 私钥文件及对应证书文件生成成功、存在且非空	dilithium_chain_root.key、user_dilithium.key、user_mldsa87.pem 等齐备
+ZS-1-7	Dilithium 签名密钥生成测试	3.	执行 Dilithium 证书链验签（程序内置）	Dilithium 签名验证通过，相关证书链签发关系验证通过	Dilithium证书链可信: true、256比特等级链(ML-DSA-87)可信: true
+ZS-1-8	SPHINCS 签名密钥生成测试	1.	运行包含 SPHINCS/SLH-DSA 算法的证书生成程序：( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq )	程序运行成功，无 SPHINCS 密钥生成异常	退出码 0
+ZS-1-8	SPHINCS 签名密钥生成测试	2.	检查 SPHINCS 私钥与证书文件：ls pqcert/pure-pq/pq_x509_certs/ | grep -i -E "sphincs|slhdsa"	SPHINCS/SLH-DSA 私钥文件及对应证书文件生成成功、存在且非空	sphincs_chain_root.key、user_sphincs.key、user_slhdsa256s.key 等齐备
+ZS-1-8	SPHINCS 签名密钥生成测试	3.	执行 SPHINCS 证书链验签（程序内置）	SPHINCS/SLH-DSA 证书链签发关系验证通过	SPHINCS证书链可信: true、256比特哈希签名链(SLH-DSA-256s)可信: true
+ZS-1-9	Kyber KEM 密钥生成测试	1.	运行包含 Kyber 算法的证书生成程序：( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq )	程序运行成功，无 Kyber 密钥生成异常	退出码 0
+ZS-1-9	Kyber KEM 密钥生成测试	2.	检查 Kyber 用户证书与私钥文件：ls pqcert/pure-pq/pq_x509_certs/ | grep -i kyber	Kyber512/768/1024 用户证书及对应私钥文件生成成功、存在且非空	user-kyber512.pem、user-kyber768.pem、user_kyber1024.pem、user_kyber512.key、user_kyber1024.key 等齐备
+ZS-1-9	Kyber KEM 密钥生成测试	3.	解析 Kyber 用户证书并验证链：openssl x509 -in pqcert/pure-pq/pq_x509_certs/user-kyber512.pem -noout -subject -issuer（公钥算法为 Kyber 自定义 OID）；链验签看程序输出	用户证书中包含 Kyber 公钥信息，证书链签发关系验证通过	用户证书可解析；打印 Kyber用户证书链可信: true
+ZS-1-10	基础证书字段验证测试	1.	运行证书生成程序生成测试证书链：( cd pqcert/x509-multi && ../../.build/pqcert/x509-multi )	程序运行成功，生成根证书、中间 CA 证书和终端实体证书	退出码 0
+ZS-1-10	基础证书字段验证测试	2.	解析证书基础字段：openssl x509 -in pqcert/x509-multi/certs/root-ca.pem -noout -text | head -20	能够读取证书版本、序列号、主题、颁发者、有效期等基础字段	版本 v3、序列号、Subject/Issuer = CN = PQ-Root-CA、有效期可读
+ZS-1-10	基础证书字段验证测试	3.	检查 CA 标记与 Key Usage：openssl x509 -in pqcert/x509-multi/certs/root-ca.pem -noout -text | grep -A1 "Basic Constraints"；对 end-entity.pem 执行同一条命令	根证书与中间证书为 CA 证书、终端证书为非 CA 证书，Key Usage、Basic Constraints 等字段符合预期	根证书 CA:TRUE, pathlen:2；终端证书 CA:FALSE
+ZS-1-11	抗量子公钥扩展字段验证测试	1.	运行混合证书生成程序：( cd pqcert/x509-multi && ../../.build/pqcert/x509-multi )	程序运行成功，生成包含抗量子算法信息的混合证书	退出码 0
+ZS-1-11	抗量子公钥扩展字段验证测试	2.	解析证书扩展字段：openssl x509 -in pqcert/x509-multi/certs/user_dilithium2.pem -noout -text | grep -c "1.3.6.1.4.1.54321.1.1"	能读取到抗量子公钥扩展字段（OID 1.3.6.1.4.1.54321.1.1），字段内容非空	计数为 1（扩展存在，内容为二进制公钥数据）
+ZS-1-11	抗量子公钥扩展字段验证测试	3.	使用工具提取抗量子公钥并用于验签：( cd pqcert/sm2 && ../../.build/pqcert/sm2 ) | grep "抗量子"	抗量子公钥能够被正确提取，并可用于后续抗量子验签流程	抗量子(SLH-DSA-256) 根自签/中间/终端: true（公钥提取与验签均成功）
+ZS-1-12	抗量子签名扩展字段验证测试	1.	运行混合证书生成程序：( cd pqcert/sm2 && ../../.build/pqcert/sm2 )	程序运行成功，生成包含抗量子签名扩展的混合证书	退出码 0
+ZS-1-12	抗量子签名扩展字段验证测试	2.	解析证书扩展字段：openssl x509 -in pqcert/x509-multi/certs/user_dilithium2.pem -noout -text | grep -c "1.3.6.1.4.1.54321.1.2"	能读取到抗量子签名扩展字段（OID 1.3.6.1.4.1.54321.1.2），签名数据非空	计数为 1（签名扩展存在且内容非空）
+ZS-1-12	抗量子签名扩展字段验证测试	3.	使用扩展字段中的抗量子签名执行验签（工具内置 pqVerify）	抗量子签名能够通过验证，说明签名扩展字段写入正确	抗量子(SLH-DSA-256) 根自签: true、中间证书: true、终端证书: true
+ZS-1-13	传统证书链验签测试	1.	运行 RSA 或 SM2 混合证书生成程序：( cd pqcert/x509-multi && ../../.build/pqcert/x509-multi )	程序运行成功，生成根证书、中间 CA 证书和终端实体证书	退出码 0
+ZS-1-13	传统证书链验签测试	2.	逐级验签：openssl verify -CAfile pqcert/x509-multi/certs/root-ca.pem pqcert/x509-multi/certs/intermediate1-ca.pem；openssl verify -CAfile pqcert/x509-multi/certs/root-ca.pem -untrusted pqcert/x509-multi/certs/intermediate1-ca.pem pqcert/x509-multi/certs/intermediate2-ca.pem；终端证书：cat .../intermediate1-ca.pem .../intermediate2-ca.pem > .build/tmp/rsa-chain.pem && openssl verify -CAfile .../root-ca.pem -untrusted .build/tmp/rsa-chain.pem .../end-entity.pem	根证书自签名、中间证书签发关系、终端证书签发关系能够被正确识别	intermediate1-ca.pem: OK、intermediate2-ca.pem: OK、end-entity.pem: OK
+ZS-1-13	传统证书链验签测试	3.	查看证书链验签结果	传统证书链验签通过，无签名错误或链路断裂	程序输出 ✅ 标准 X509 证书链验证成功；openssl 逐级验签均 OK
+ZS-1-14	抗量子签名验签测试	1.	运行包含抗量子签名扩展的混合证书生成程序：( cd pqcert/sm2 && ../../.build/pqcert/sm2 )	程序运行成功，生成包含抗量子公钥和抗量子签名扩展的证书	退出码 0
+ZS-1-14	抗量子签名验签测试	2.	提取证书中的抗量子公钥、抗量子签名和 TBS 数据（工具内部完成，对应代码 pqVerify）	能够正确提取抗量子公钥、抗量子签名和待验签数据	工具已对三条证书分别提取并验签（根/中间/终端）
+ZS-1-14	抗量子签名验签测试	3.	执行抗量子签名验签	抗量子签名验签通过，程序输出抗量子验签成功	抗量子(SLH-DSA-256) 根自签/中间证书/终端证书: true
+ZS-1-15	纯抗量子证书链验签测试	1.	运行纯抗量子证书链生成程序：( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq )	程序运行成功，生成 Kyber、Dilithium、SPHINCS/SLH-DSA 等纯抗量子证书链	退出码 0
+ZS-1-15	纯抗量子证书链验签测试	2.	解析纯抗量子证书链：openssl x509 -in pqcert/pure-pq/pq_x509_certs/kyber_chain_root_dilithium.pem -noout -subject -issuer（其余链同理）	能够解析根证书、中间证书和终端实体证书的结构及算法信息	各链证书均可解析（Subject/Issuer 可读）
+ZS-1-15	纯抗量子证书链验签测试	3.	执行纯抗量子证书链验签（程序内置）	根证书自签名、中间证书签发关系、终端证书签发关系均验证通过	Kyber用户证书链可信: true、Dilithium证书链可信: true、SPHINCS证书链可信: true、256比特等级链(ML-DSA-87)可信: true、256比特哈希签名链(SLH-DSA-256s)可信: true
+ZS-1-16	SM2 外部公钥导入签发测试	1.	准备并检查外部公钥文件：head -3 pqcert/data/public_keys.txt	外部公钥文件存在且格式符合工具读取要求（含 SM2 公钥参数）	文件含 [SM2] 段：BitLen=256、Blob=<X||Y 十六进制>
+ZS-1-16	SM2 外部公钥导入签发测试	2.	运行 SM2 外部公钥导入签发程序：( cd pqcert/gen-sm2-chain && ../../.build/pqcert/gen-sm2-chain )	程序成功读取外部 SM2 公钥，生成 SM2 根证书和用户证书	退出码 0；输出 pqcert/certs-sample/sm2_root.pem、sm2_user.pem
+ZS-1-16	SM2 外部公钥导入签发测试	3.	验证生成的 SM2 用户证书：openssl x509 -in pqcert/certs-sample/sm2_user.pem -noout -pubkey（与外部公钥 X/Y 比对）；链关系看程序输出 Root 自签/User 由 Root 签发	用户证书公钥与导入的 SM2 公钥一致，用户证书由 SM2 根证书签发且验签通过	openssl x509 -pubkey 输出的 SM2 公钥（1.2.156.10197.1.301）与 public_keys.txt 中 X/Y 一致；Root 自签名: <nil>、User 由 Root 签发: <nil>（成功）
+ZS-1-17	ML-DSA 外部公钥导入签发测试	1.	准备并检查外部公钥文件：grep -A2 "ML-DSA\|MLDSA" pqcert/data/public_keys.txt | head -5	外部公钥文件存在且格式符合工具读取要求（含 ML-DSA 公钥数据）	文件含 ML-DSA 公钥段（供 gen-pq-chain 解析）
+ZS-1-17	ML-DSA 外部公钥导入签发测试	2.	运行 ML-DSA 外部公钥导入签发程序：( cd pqcert/gen-pq-chain && ../../.build/pqcert/gen-pq-chain )	程序成功读取外部 ML-DSA 公钥，生成 ML-DSA 根证书和用户证书	退出码 0；输出 pqcert/certs-sample/mldsa_root.pem、mldsa_user.pem
+ZS-1-17	ML-DSA 外部公钥导入签发测试	3.	验证生成的 ML-DSA 用户证书及链关系（程序输出）	用户证书公钥与导入的 ML-DSA 公钥一致，用户证书由 ML-DSA 根证书签发且验签通过	Root 自签名: true、User 由 Root 签发: true；🎉 纯 PQ 证书链验证通过！
+ZS-1-18	证书 PEM 文件输出测试	1.	运行证书生成程序：( cd pqcert/x509-multi && ../../.build/pqcert/x509-multi )	程序运行成功，生成证书输出文件	退出码 0
+ZS-1-18	证书 PEM 文件输出测试	2.	检查证书 PEM 文件：head -1 pqcert/x509-multi/certs/end-entity.pem；grep -l "BEGIN CERTIFICATE" pqcert/x509-multi/certs/*.pem | wc -l	证书文件存在且非空，PEM 块类型为 CERTIFICATE	首行 -----BEGIN CERTIFICATE-----；目录中多份 PEM 均为 CERTIFICATE 块
+ZS-1-18	证书 PEM 文件输出测试	3.	使用工具解析生成的证书文件：openssl x509 -in pqcert/x509-multi/certs/end-entity.pem -noout -subject	证书文件能够被读取和解析，可用于后续字段检查或验签	输出 subject=CN = pq-end-entity
+ZS-1-19	私钥 PEM 文件输出测试	1.	运行支持私钥输出的证书生成程序：( cd pqcert/sm2 && ../../.build/pqcert/sm2 )；( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq )	程序运行成功，生成对应私钥文件	均退出码 0
+ZS-1-19	私钥 PEM 文件输出测试	2.	检查私钥 PEM 文件：head -1 pqcert/sm2/certs_sm2/root_sm2.key；head -1 pqcert/pure-pq/pq_x509_certs/user_kyber512.key；ls pqcert/sm2/certs_sm2/*_pq_*.key | head -3	私钥文件存在且非空，PEM 块类型为 PRIVATE KEY（SM2、Dilithium/ML-DSA、SLH-DSA、Kyber 私钥均输出）	两处首行均为 -----BEGIN PRIVATE KEY-----；inter_pq_dilithium3.key、user_pq_kyber1024.key 等存在
+ZS-1-19	私钥 PEM 文件输出测试	3.	验证私钥可用性：openssl pkey -in pqcert/sm2/certs_sm2/root_sm2.key -noout -text | head -3	私钥能够用于对应证书生成、签名、验签或密钥封装流程，无格式错误	openssl pkey 可解析出 SM2 私钥结构（无格式错误）
+ZS-2-1	密钥生成性能测试	1.	【项目根】对含各算法密钥生成的程序计时（工具本身不打印耗时，需外部计时）：for i in $(seq 1 10); do s=$(date +%s%N); ( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq >/dev/null ); e=$(date +%s%N); echo $(( (e-s)/1000000 ))ms; done（RSA/SM2 用 pqcert/x509-multi、pqcert/sm2 同法）	各算法密钥均能生成成功，无异常退出	各程序退出码 0（计时数据按上述命令逐次记录）
+ZS-2-1	密钥生成性能测试	2.	重复执行并记录耗时：重复步骤 1 的循环，记录测试次数、成功次数、失败次数、平均/最大/最小耗时	记录测试次数、成功次数、失败次数、平均耗时、最大耗时、最小耗时	
+ZS-2-1	密钥生成性能测试	3.	汇总不同算法密钥生成耗时（RSA、SM2、Dilithium/ML-DSA、SPHINCS/SLH-DSA、Kyber）	密钥生成性能满足测试要求，未出现明显异常耗时或生成失败	
+ZS-2-2	证书生成性能测试	1.	分别对 5 个证书生成程序计时：for t in pure-pq sm2 x509-multi gen-pq-chain gen-sm2-chain; do s=$(date +%s%N); ( cd pqcert/$t && ../../../.build/pqcert/$t >/dev/null ); e=$(date +%s%N); echo "$t $(( (e-s)/1000000 ))ms"; done（在项目根执行）	各类型证书链均能生成成功，无异常退出	五个程序退出码均为 0
+ZS-2-2	证书生成性能测试	2.	重复执行证书生成流程并记录耗时	记录测试次数、成功次数、失败次数、平均耗时、最大耗时、最小耗时	
+ZS-2-2	证书生成性能测试	3.	汇总不同证书链生成耗时（RSA 混合链、SM2 混合链、Kyber 链、Dilithium 链、SPHINCS/SLH-DSA 链）	证书生成性能满足测试要求，输出文件完整，未出现明显异常耗时或生成失败	
+ZS-2-3	证书链验证性能测试	1.	准备待验证证书链：( cd pqcert/x509-multi && ../../.build/pqcert/x509-multi )、( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq )	待验证的 RSA/SM2 混合证书链与纯抗量子证书链文件存在且可解析	两类链均已生成，退出码 0
+ZS-2-3	证书链验证性能测试	2.	重复执行证书链验签并计时：for i in $(seq 1 20); do s=$(date +%s%N); openssl verify -CAfile pqcert/x509-multi/certs/root-ca.pem -untrusted .build/tmp/rsa-chain.pem pqcert/x509-multi/certs/end-entity.pem >/dev/null; e=$(date +%s%N); echo $(( (e-s)/1000000 ))ms; done（抗量子验签用 pqcert/sm2、pqcert/pure-pq 程序的验签环节计时）	记录测试次数、成功次数、失败次数、平均耗时、最大耗时、最小耗时	
+ZS-2-3	证书链验证性能测试	3.	汇总不同证书链验证耗时	各类证书链验证均通过，验证性能满足测试要求，未出现明显异常耗时或验证失败	
+ZS-3-1	多算法组合覆盖测试	1.	依次运行各生成程序：( cd pqcert/x509-multi && ../../.build/pqcert/x509-multi )；( cd pqcert/sm2 && ../../.build/pqcert/sm2 )；( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq )；( cd pqcert/gen-pq-chain && ../../.build/pqcert/gen-pq-chain )；( cd pqcert/gen-sm2-chain && ../../.build/pqcert/gen-sm2-chain )	各证书生成程序均运行成功、无异常退出	五个程序退出码均为 0
+ZS-3-1	多算法组合覆盖测试	2.	检查不同算法组合下的输出文件：RSA 混合链（pqcert/x509-multi/certs/）、SM2 混合链（pqcert/sm2/certs_sm2/）、纯抗量子链（pqcert/pure-pq/pq_x509_certs/）、外部公钥签发链（pqcert/certs-sample/）	成功生成 RSA、SM2、Dilithium/ML-DSA、SPHINCS/SLH-DSA、Kyber 等算法组合对应的证书文件	覆盖：RSA + Kyber/Dilithium/SLH-DSA 用户证书 10 张；SM2 + Dilithium/ML-DSA/SLH-DSA/Kyber 链；纯抗量子 5 条链（Kyber/Dilithium/SPHINCS/ML-DSA-87/SLH-DSA-256s）；外部公钥导入 2 条链
+ZS-3-1	多算法组合覆盖测试	3.	验证各类证书链生成与验签结果	各算法组合下证书链生成成功，证书解析和验签结果符合预期	Kyber用户证书链可信/Dilithium/SPHINCS/ML-DSA-87/SLH-DSA-256s 均为 true；✅ 标准 X509 证书链验证成功；🎉 纯 PQ 证书链验证通过！
+ZS-3-2	Linux 环境编译运行测试	1.	在 Linux 环境下编译证书生成工具（Go 1.25+）：( cd pqcert/pure-pq && go build -o ../../.build/pqcert/pure-pq . )（其余四个同法，见 §0.2）	编译成功，无编译错误	五个工具均编译成功（默认 Go 1.25.1）
+ZS-3-2	Linux 环境编译运行测试	2.	检查产物并运行主要证书生成程序：file .build/pqcert/pure-pq；( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq )	产物为 Linux 可执行文件，程序运行成功并生成证书与私钥文件	ELF 64-bit LSB executable, x86-64；程序退出码 0 并输出证书文件
+ZS-3-2	Linux 环境编译运行测试	3.	执行证书解析和验签流程：openssl x509 -in pqcert/pure-pq/pq_x509_certs/user-kyber512.pem -noout -subject；( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq ) | grep 可信	证书可解析，证书链和签名验证结果符合预期	证书可解析；五条链 可信: true
+ZS-3-3	Windows 目标平台交叉编译测试	1.	在 Linux 环境下配置交叉编译参数（GOOS=windows GOARCH=amd64）并交叉编译：( cd pqcert/pure-pq && GOOS=windows GOARCH=amd64 go build -mod=mod -o ../../.build/pqcert/pure-pq.exe . )（其余四个同法）	编译参数配置成功，目标平台为 Windows，无错误退出	五个工具均编译成功（纯 Go 实现、无 cgo 依赖）
+ZS-3-3	Windows 目标平台交叉编译测试	2.	执行交叉编译并检查输出：file .build/pqcert/*.exe	成功生成 Windows 可执行文件，文件存在且非空，类型为 PE32+ x86-64	五个 .exe 均为 PE32+ executable (console) x86-64, for MS Windows
+ZS-3-3	Windows 目标平台交叉编译测试	3.	（可选）在 Windows 环境运行 .exe 完成证书生成	Windows 下可运行并生成证书/私钥文件	
