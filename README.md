@@ -44,6 +44,7 @@
 │   ├── 测试大纲-实测结果填充.md   实测结果填充版（已跑通的真实数据）
 │   ├── HQC-TLS-最小改造路线.md   TLS 侧接入 HQC 的最小改动方案
 │   ├── 指标2-TLS协议量子安全等级论证.md  指标2 论证：TLS 交互逻辑→抗量子原语实例化→128/256 比特等级（含 RFC/码点依据）
+│   ├── 背景-PQC-TLS首飞行分包与ClientHello体积.md  背景知识：为何要求 ClientHello 不分包，MTU/MSS/1200 与 KEM 体积
 │   └── assets/        TLS 握手流程 / 密钥材料 / 测试拓扑图
 ├── tools/             测试辅助工具
 │   ├── tls_hello_check.py      握手报文解析 + 混合拼接长度断言（RFC 9954）
