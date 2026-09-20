@@ -32,7 +32,7 @@ signature_algorithms 等扩展），它是整个握手的"首飞行"（first fli
 | **576 字节** | IPv4 的**最小重组缓冲区 / 最小 MTU**：任何链路都必须能转发 576 字节的报文而不再分片；对应 TCP 未协商时的默认 MSS 536 字节 | RFC 791、RFC 1122 §4.2.3.1 |
 | ~600 字节 | **传统（不含抗量子份额）ClientHello 的典型体积**：只有 X25519 等经典 key_share 时，ClientHello 的 TLS 记录长度通常在几百字节量级 | 实测经验值 |
 | **1460 字节** | 以太网 MTU 1500 下的 TCP **MSS**（1500 − IPv4 头 20 − TCP 头 20） | — |
-| **1455 字节** | 单个 TCP 段能装下的 **TLS 记录长度上限**（MSS 1460 − TLS 记录头 5），超过就会分包 | — |
+| **1455 字节** | 单个 TCP 段能装下的 **ClientHello 记录长度字段上限**（= MSS 1460 − TLS 记录头 5）。注意：抓包/解析脚本打印的"记录长度"指的是**记录头里的 length 字段**，它不含 5 字节记录头；在线字节数 = 该值 + 5。若链路启用 TCP 时间戳（Linux 默认），实际单段容量约再减 12 字节（≈1443） | — |
 | ~14.6 KB | **初始拥塞窗口 IW10**（RFC 6928 建议 10×MSS）：它决定"不用等 ACK 能连续发多少"，**不决定是否分包** | RFC 6928 |
 | **1200 字节** | QUIC 初始数据报的最小长度（客户端必须填充到至少 1200 字节）；DTLS 1.3 也以约 1200 字节作为"装进一个数据报"的目标 | RFC 9000 §14.1、RFC 9147 |
 | 800 / 1184 / 1568 字节 | ML-KEM-512 / 768 / 1024 的**封装公钥**长度，也就是客户端 key_share 中的抗量子分量 | FIPS 203 |
@@ -44,7 +44,48 @@ signature_algorithms 等扩展），它是整个握手的"首飞行"（first fli
 （约 600 字节）**，加上抗量子 key_share（800~2400 字节）后必然翻倍甚至到 2~3 KB。真正可用的判据是：
 **"ClientHello 的记录长度能否装进 1 个 MSS / 1 个数据报"**。
 
-## 三、抗量子 KEM 为什么正好顶在这条线上
+## 三、ClientHello 的"其余开销"有多少、是否固定（实测拆解）
+
+**结论：不固定。** 它是"某个具体客户端"实现的扩展集合，随客户端、域名长度、算法列表长度而变化。
+本仓库客户端（Go 实现，无 ALPN、无 GREASE、无 padding）的实测拆解如下，两个极端配置各测一次：
+
+| 组成 | X25519-only（只 1 个组） | 默认配置（6 个 supported_groups） |
+|---|---|---|
+| TLS 记录头 | 5 | 5 |
+| 握手头（类型 + 3 字节长度） | 4 | 4 |
+| legacy_version | 2 | 2 |
+| random | 32 | 32 |
+| session_id（长度字段 1 + 32 字节） | 33 | 33 |
+| cipher_suites（长度字段 2 + 3 个套件×2） | 8 | 8 |
+| compression_methods | 2 | 2 |
+| extensions 总长字段 | 2 | 2 |
+| server_name(SNI, "localhost") | 18 | 18 |
+| status_request | 9 | 9 |
+| supported_groups（**每组 2 字节**） | 8（1 组） | 18（6 组） |
+| ec_point_formats | 6 | 6 |
+| signature_algorithms | 30 | 30 |
+| renegotiation_info | 5 | 5 |
+| extended_master_secret | 4 | 4 |
+| SCT | 4 | 4 |
+| supported_versions | 7 | 7 |
+| key_share 框架（扩展头 4 + 列表长度 2 + 条目头 4） | 10 | 10 |
+| key_share 密钥字节 | 32 | 865（SM2Kyber512） |
+| **在线合计（字节）** | **221** | **1064** |
+| **除密钥字节外的开销** | **189** | **199** |
+
+由此得到可直接用于估算的公式：
+
+```
+ClientHello 在线字节数 ≈ key_share 密钥字节数 + 其他开销（本客户端 189~199 字节）
+```
+
+其他开销会随下列因素变化：支持的组数（每个 2 字节）、SNI 主机名长度（每字符 1 字节）、
+cipher_suites 个数（每个 2 字节）、signature_algorithms 个数（每个 2 字节）、是否发送多个
+key_share（每多一个增加 4 + 该组公钥长度）、是否带 ALPN / psk_key_exchange_modes / padding /
+ECH / GREASE 等扩展（浏览器通常比上表多 100~200 字节，实际开销约 300~400 字节）。
+**因此定指标时应以"目标客户端 + 实测"为准，不要假设一个固定开销值。**
+
+## 四、抗量子 KEM 为什么正好顶在这条线上
 
 在只发一个 key_share 的情况下，ClientHello 的 TLS 记录长度 ≈ **抗量子 key_share 长度 + 约 190 字节**
 （其余固定扩展与开销）。按以太网 MSS 1455 字节反推，**key_share 的安全上限约 1.26 KB**：
@@ -60,11 +101,23 @@ signature_algorithms 等扩展），它是整个握手的"首飞行"（first fli
 （上表中间三行的实测值取自本仓库抓包，可用 `python3 tools/tls_hello_check.py <pcap>` 复核；
 "约 1406""约 7450"为按 "+190 字节"规律推算。）
 
+**Kyber-768 / Kyber-1024 是不是"一定分包"？** 不是绝对的，取决于 (key_share 长度 + 该客户端其他开销)
+与路径 MSS 的比较：
+
+- Kyber-768/ML-KEM-768（key_share 1184 字节）：在本仓库客户端下 ClientHello = 1184 + 199 = 1383（在线 1388），
+  小于以太网 MSS 1460，**标准以太网上不分包**；但在浏览器式客户端（其他开销 300~400）下约 1484~1584，
+  会超过 1460 而**分包**；在 MTU 1400 的隧道上（MSS 1360）也会分包；在 QUIC/DTLS 的 1200 字节
+  单数据报下必然放不下。
+- Kyber-1024/ML-KEM-1024（key_share 1568 字节）：即使把其他开销压到理论最小（仅保留
+  supported_versions、supported_groups、signature_algorithms 与 key_share，约 84 字节），
+  ClientHello 也约 1652 字节 > 1460，**在以太网及更小 MTU 的链路上必然分包**（只有 MTU ≥1812
+  的巨型帧才可能单段）；用本仓库客户端实测为 1767（在线 1772）。
+
 这解释了一个常见现象：**为什么 IETF 推荐的首个 PQ/T 混合组是 X25519**MLKEM768（key_share 1216 字节），
 而不是更"安全余量更大"的 ML-KEM-1024 混合组——**1216 + 约 190 ≈ 1406 字节刚好能装进一个以太网报文**；
 换成 ML-KEM-1024（1568）就会分包。这就是"抗量子算法选型要同时考虑体积"的由来。
 
-## 四、工程上的应对手段
+## 五、工程上的应对手段
 
 一是 **key_share 预测**（只发最可能被服务端选中的 1~2 个 key_share，见 IETF 草案
 draft-ietf-tls-key-share-prediction），代价是预测失败时服务端回 HelloRetryRequest，多一个 RTT；
@@ -74,10 +127,10 @@ draft-ietf-tls-key-share-prediction），代价是预测失败时服务端回 He
 五是**基础设施侧适配**，负载均衡、WAF、抓包与日志系统要能正确处理 2~3 KB 甚至更大的 ClientHello
 （这正是 Chrome 发布说明提示的中间盒问题）。
 
-## 五、一句话总结
+## 六、一句话总结
 
 "ClientHello 不要分包"的实质是**控制首飞行报文的体积**：以太网链路上应使 TLS 记录 ≤ 1 个 MSS
-（≈1455 字节，对应 key_share ≲1.2 KB），QUIC/DTLS 上应 ≤ 1 个约 1200 字节的数据报；抗量子 KEM 的
+（记录长度字段 ≤1455 字节、在线 ≤1460 字节，对应 key_share ≲1.25 KB），QUIC/DTLS 上应 ≤ 1 个约 1200 字节的数据报；抗量子 KEM 的
 公钥/密文是主要占用者。常被记起的"600 字节"并非协议规定值，最可能是 IPv4 最小 MTU 576 字节，
 或传统 ClientHello 自身的几百字节体积。
 
