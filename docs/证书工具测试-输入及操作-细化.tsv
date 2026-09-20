@@ -58,10 +58,10 @@ ZS-1-19	私钥 PEM 文件输出测试	2.	检查私钥 PEM 文件：head -1 pqcer
 ZS-1-19	私钥 PEM 文件输出测试	3.	验证私钥可用性：openssl pkey -in pqcert/sm2/certs_sm2/root_sm2.key -noout -text | head -3	私钥能够用于对应证书生成、签名、验签或密钥封装流程，无格式错误	openssl pkey 可解析出 SM2 私钥结构（无格式错误）
 ZS-2-1	密钥生成性能测试	1.	【项目根】对含各算法密钥生成的程序计时（工具本身不打印耗时，需外部计时）：for i in $(seq 1 10); do s=$(date +%s%N); ( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq >/dev/null ); e=$(date +%s%N); echo $(( (e-s)/1000000 ))ms; done（RSA/SM2 用 pqcert/x509-multi、pqcert/sm2 同法）	各算法密钥均能生成成功，无异常退出	各程序退出码 0（计时数据按上述命令逐次记录）
 ZS-2-1	密钥生成性能测试	2.	重复执行并记录耗时：重复步骤 1 的循环，记录测试次数、成功次数、失败次数、平均/最大/最小耗时	记录测试次数、成功次数、失败次数、平均耗时、最大耗时、最小耗时	
-ZS-2-1	密钥生成性能测试	3.	汇总不同算法密钥生成耗时（RSA、SM2、Dilithium/ML-DSA、SPHINCS/SLH-DSA、Kyber）	密钥生成性能满足测试要求，未出现明显异常耗时或生成失败	
+ZS-2-1	密钥生成性能测试	3.	汇总不同算法密钥生成耗时（RSA、SM2、Dilithium/ML-DSA、SPHINCS/SLH-DSA、Kyber）	密钥生成性能满足测试要求，未出现明显异常耗时或生成失败	本机单次运行指示性耗时：pure-pq ≈12.6 s、sm2 ≈7.6 s、x509-multi ≈3.8 s（含 RSA-2048 密钥对生成）、gen-pq-chain ≈6 ms、gen-sm2-chain ≈13 ms（正式测试请按步骤重复 10 次取平均/最小/最大）
 ZS-2-2	证书生成性能测试	1.	分别对 5 个证书生成程序计时：for t in pure-pq sm2 x509-multi gen-pq-chain gen-sm2-chain; do s=$(date +%s%N); ( cd pqcert/$t && ../../../.build/pqcert/$t >/dev/null ); e=$(date +%s%N); echo "$t $(( (e-s)/1000000 ))ms"; done（在项目根执行）	各类型证书链均能生成成功，无异常退出	五个程序退出码均为 0
 ZS-2-2	证书生成性能测试	2.	重复执行证书生成流程并记录耗时	记录测试次数、成功次数、失败次数、平均耗时、最大耗时、最小耗时	
-ZS-2-2	证书生成性能测试	3.	汇总不同证书链生成耗时（RSA 混合链、SM2 混合链、Kyber 链、Dilithium 链、SPHINCS/SLH-DSA 链）	证书生成性能满足测试要求，输出文件完整，未出现明显异常耗时或生成失败	
+ZS-2-2	证书生成性能测试	3.	汇总不同证书链生成耗时（RSA 混合链、SM2 混合链、Kyber 链、Dilithium 链、SPHINCS/SLH-DSA 链）	证书生成性能满足测试要求，输出文件完整，未出现明显异常耗时或生成失败	本机单次运行指示性耗时：pure-pq ≈12.6 s（含 SLH-DSA-256s 密钥生成，最慢）、sm2 ≈7.6 s、x509-multi ≈3.8 s；外部公钥导入类（gen-*）≈6~13 ms
 ZS-2-3	证书链验证性能测试	1.	准备待验证证书链：( cd pqcert/x509-multi && ../../.build/pqcert/x509-multi )、( cd pqcert/pure-pq && ../../.build/pqcert/pure-pq )	待验证的 RSA/SM2 混合证书链与纯抗量子证书链文件存在且可解析	两类链均已生成，退出码 0
 ZS-2-3	证书链验证性能测试	2.	重复执行证书链验签并计时：for i in $(seq 1 20); do s=$(date +%s%N); openssl verify -CAfile pqcert/x509-multi/certs/root-ca.pem -untrusted .build/tmp/rsa-chain.pem pqcert/x509-multi/certs/end-entity.pem >/dev/null; e=$(date +%s%N); echo $(( (e-s)/1000000 ))ms; done（抗量子验签用 pqcert/sm2、pqcert/pure-pq 程序的验签环节计时）	记录测试次数、成功次数、失败次数、平均耗时、最大耗时、最小耗时	
 ZS-2-3	证书链验证性能测试	3.	汇总不同证书链验证耗时	各类证书链验证均通过，验证性能满足测试要求，未出现明显异常耗时或验证失败	
