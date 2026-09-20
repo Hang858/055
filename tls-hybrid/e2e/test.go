@@ -123,7 +123,10 @@ var kexByName = map[string]tls.CurveID{
 	"SM2HQC-128": tls.SM2HQC128,
 	"SM2HQC-256": tls.SM2HQC256,
 	"SM2HQC1":    tls.SM2HQC128,
-	"SM2HQC5":    tls.SM2HQC256,
+	"SM2HQC5":    tls.SM2HQC256, "X25519HQC1Draft00": tls.X25519HQC128,
+	"X25519HQC5Draft00": tls.X25519HQC256,
+	"SM2HQC1Draft00":    tls.SM2HQC128,
+	"SM2HQC5Draft00":    tls.SM2HQC256,
 }
 
 const kexHelp = "SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber768Draft00、" +
@@ -329,6 +332,8 @@ func runClient(wg *sync.WaitGroup) {
 				log.Println("🔑 使用密钥交换算法: X25519Kyber512Draft00 (混合后量子)")
 			case tls.SM2Kyber512Draft00:
 				log.Println("🔑 使用密钥交换算法: SM2Kyber512Draft00 (混合后量子)")
+			case tls.SM2Kyber768Draft00:
+				log.Println("🔑 使用密钥交换算法: SM2Kyber768Draft00 (混合后量子, 192 比特量子安全等级)")
 			case tls.X25519Kyber768Draft00:
 				log.Println("🔑 使用密钥交换算法: X25519Kyber768Draft00 (混合后量子)")
 			case tls.X25519Kyber1024Draft00:

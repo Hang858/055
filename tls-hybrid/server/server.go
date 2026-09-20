@@ -142,7 +142,10 @@ var kexByName = map[string]tls.CurveID{
 	"SM2HQC-128": tls.SM2HQC128,
 	"SM2HQC-256": tls.SM2HQC256,
 	"SM2HQC1":    tls.SM2HQC128,
-	"SM2HQC5":    tls.SM2HQC256,
+	"SM2HQC5":    tls.SM2HQC256, "X25519HQC1Draft00": tls.X25519HQC128,
+	"X25519HQC5Draft00": tls.X25519HQC256,
+	"SM2HQC1Draft00":    tls.SM2HQC128,
+	"SM2HQC5Draft00":    tls.SM2HQC256,
 }
 
 // kexDisplayName 用于日志展示（别名统一取正式名）。

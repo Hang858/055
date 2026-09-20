@@ -123,7 +123,10 @@ var kexByName = map[string]tls.CurveID{
 	"SM2HQC-128": tls.SM2HQC128,
 	"SM2HQC-256": tls.SM2HQC256,
 	"SM2HQC1":    tls.SM2HQC128,
-	"SM2HQC5":    tls.SM2HQC256,
+	"SM2HQC5":    tls.SM2HQC256, "X25519HQC1Draft00": tls.X25519HQC128,
+	"X25519HQC5Draft00": tls.X25519HQC256,
+	"SM2HQC1Draft00":    tls.SM2HQC128,
+	"SM2HQC5Draft00":    tls.SM2HQC256,
 }
 
 const kexHelp = "SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber768Draft00、" +
@@ -212,6 +215,8 @@ func main() {
 					fmt.Println("Used X25519Kyber512Draft00")
 				case tls.SM2Kyber512Draft00:
 					fmt.Println("Used Kyber512sm2")
+				case tls.SM2Kyber768Draft00:
+					fmt.Println("Used SM2Kyber768Draft00 (192 比特量子安全等级)")
 				case tls.X25519Kyber768Draft00:
 					fmt.Println("Used X25519Kyber768Draft00")
 				case tls.X25519Kyber1024Draft00:
