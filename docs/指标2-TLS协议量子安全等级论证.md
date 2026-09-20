@@ -1,240 +1,31 @@
 # 指标 2 · TLS 协议达到 128、256 比特量子安全等级的论证
 
-> 本文按与 IPsec、SSH 相同的口径撰写：先给出协议的交互逻辑，再说明抗量子改造把哪些密码原语
-> 加入了协议的哪个环节，最后论证"协议可达 128、256 比特量子安全等级"这一指标如何由所实例化的
-> 抗量子算法满足。文中所有标准编号、码点、参数长度均已逐条核对（依据见 §5）。
+TLS（Transport Layer Security，传输层安全协议）位于传输层与应用层之间，用来为各种应用层协议及其承载的业务系统提供三个方面的安全能力：通信内容的机密性，防止链路上被窃听；通信内容的完整性与抗重放，防止被篡改；通信对端的身份真实性，即通过数字证书认证服务端身份（必要时也认证客户端身份）。银行网银、手机银行、第三方支付、开放 API 网关、行内管理通道等几乎所有跨越不可信网络传输敏感信息的场景，都由 TLS 承载其安全，因此 TLS 能否抵御量子计算攻击，直接决定了这些业务的长期安全性。
 
-## 1. TLS 协议的主要交互过程
+TLS 1.3（RFC 9846）的握手过程是"参数协商、密钥交换、身份认证、加密传输"四个环节的连贯过程：客户端先发送 ClientHello，其中包含随机数、支持的协议版本、密码套件、支持的密钥交换算法列表（supported_groups）、预先给出的密钥交换份额（key_share）以及可接受的签名算法列表（signature_algorithms）；服务端从客户端给出的密钥交换算法列表中选定一个，在 ServerHello 中给出协议版本、密码套件、选中的密钥交换算法以及自己的密钥交换份额，如果客户端没有为服务端想选的那个算法预先提供份额，服务端就先回一个 HelloRetryRequest 让客户端补发份额，然后再继续握手。此后双方各自用对方给出的份额与本机私钥计算出共享秘密，并把它送入 TLS 1.3 的密钥调度，经 HKDF（RFC 5869）派生出双方的握手流量密钥，后续报文全部在加密信道中传输：服务端在其中发送自己的证书链（Certificate）和对握手报文的签名（CertificateVerify），客户端验证证书链的可信性和签名的有效性，从而完成对服务端身份的认证，服务端也可以要求客户端出示证书以完成双向认证；握手完成后，双方再由主密钥派生出应用流量密钥与导出密钥，用 AEAD 算法保护应用数据，并可在通信过程中通过 KeyUpdate 更新密钥。
 
-TLS 1.3（RFC 9846）采用"密钥交换 + 证书认证"的两段式握手，主要交互过程如下：
+这里需要明确协议安全性与算法安全性之间的关系。协议是密码原语组装成交互流程的逻辑，TLS 的交互逻辑本身——ClientHello/ServerHello 的字段结构、key_share 的交换、密钥调度、CertificateVerify 的验签流程——并不自带任何量子安全能力，它提供的是一套正确、可协商、可绑定的框架；真正决定安全强度的是这套框架所实例化的密码原语，即密钥交换环节的密钥封装算法（KEM，其密钥生成、封装、解封装三个算法实例化出"客户端发送公钥、服务端封装得到密文与共享秘密、客户端解封装得到同一共享秘密"的交互）、身份认证环节的数字签名算法（DSA），以及密钥派生所用的哈希算法和应用数据保护所用的对称算法。协议安全性与算法安全性因此是"框架正确性"与"原语强度"两个层面的叠加：一方面，协议实现必须把认证与密钥交换通过握手报文的 Transcript-Hash 绑定在一起（TLS 1.3 的 CertificateVerify 正是对签名上下文与此前全部握手报文的哈希进行签名），防止攻击者替换、降级或重放协商参数，这部分由协议自身保证；另一方面，抵御量子攻击的能力完全来自被实例化的算法，与交互逻辑无关，并且协议的**整体**量子安全等级取决于所有环节中强度最低的那一个——密钥交换、身份认证、密钥派生哈希、应用数据加密算法中任何一个环节未达到目标等级，协议整体就达不到该等级。换言之，TLS 要达到 128 比特或 256 比特量子安全，既不能靠"协议版本升级"，也不能只升级其中一个环节，而必须让密钥交换使用的抗量子 KEM 算法实例、身份认证使用的抗量子 DSA 算法实例、以及配套的哈希与对称算法实例都达到相应的安全等级。
 
-1) 客户端发送 **ClientHello**：携带客户端随机数、`supported_versions`（TLS 1.3）、`cipher_suites`
-   （对称加密套件）、`supported_groups`（可接受的密钥交换算法/群列表，按偏好降序）、`key_share`
-   （针对其中若干群预先给出的密钥交换份额）、`signature_algorithms`（可接受的签名算法列表）等扩展。
+按照这一关系，TLS 的抗量子改造落在两个位置上：一是算法协商阶段在密钥交换算法列表中引入抗量子 KEM 或"经典算法 + 抗量子算法"的混合方案，在签名算法列表中引入抗量子签名算法并让证书承载抗量子公钥；二是密钥交换与身份认证两个环节分别由抗量子原语实例化。混合密钥交换在 TLS 中的具体做法由 RFC 9954 规定，其核心是"直接拼接、不带长度字段"：一个混合组合被当作一个新的密钥交换算法（一个新的 NamedGroup）在 supported_groups 中协商，其 key_share 中的密钥交换值就是各分量密钥交换值的直接拼接，拼接顺序必须与该组合的定义顺序一致——客户端侧是各分量公钥（经典算法的公钥份额与抗量子 KEM 的封装公钥）的拼接，服务端侧是各分量公钥与抗量子 KEM 封装密文的拼接，共享秘密的合成同样是直接拼接。这里需要特别指出的是，TLS 与 SSH 的构造并不相同：SSH 是把经典共享秘密与抗量子共享秘密拼接后再做一次哈希得到最终密钥（K = HASH(K_CL ‖ K_PQ)），而 TLS 1.3 不再额外做哈希，而是直接把拼接后的共享秘密**作为密钥调度中的 (EC)DHE 输入**，即 Handshake Secret = HKDF-Extract(派生的早期秘密, 经典共享秘密 ‖ 抗量子共享秘密)，再经 Derive-Secret 与 HKDF-Expand-Label 派生出握手与应用流量密钥；由于 HKDF-Extract 对其输入具有双伪随机函数（dual-PRF）性质，该构造被证明等价于双 PRF 组合器，只要经典分量与抗量子分量中任意一个未被攻破，派生出的会话密钥就是安全的。这正是混合方案的价值所在：量子攻击者可以破解经典分量，但只要抗量子分量未被攻破，握手密钥仍然安全；反之若抗量子算法日后被分析出缺陷，经典分量仍然提供现有的安全强度。
 
-2) 服务端回复 **ServerHello**：从客户端 `supported_groups` 中选定一个密钥交换算法（`key_share`
-   中给出服务端份额），并选定协议版本与密码套件。若客户端没有为服务端想选的群提供份额，服务端先回
-   **HelloRetryRequest**，客户端补发对应份额后再继续（此时多一次往返）。
+国产密码算法与抗量子算法的混合，遵循的正是上述同一套机制。本课题在 TLS 侧实现的国密混合组合为"SM2 + 抗量子 KEM"，其拼接方式与长度构成可以逐字节核对：客户端在 key_share 中给出的是 SM2 公钥（椭圆曲线未压缩点，65 字节）与抗量子 KEM 封装公钥的直接拼接，例如 SM2 与 Kyber-512（ML-KEM-512 的前身，同为 128 比特量子安全等级）混合时为 65 + 800 = 865 字节，与 Kyber-1024（256 比特量子安全等级）混合时为 65 + 1568 = 1633 字节；服务端在 ServerHello 的 key_share 中给出的是 SM2 密文与抗量子 KEM 封装密文的直接拼接，其中 SM2 密文按国密标准采用 C1‖C3‖C2 的布局，共 129 字节（C1 为 65 字节的椭圆曲线点，C3 为 32 字节的 SM3 杂凑值，C2 为 32 字节的密文数据），因此 SM2 与 Kyber-512 混合时为 129 + 768 = 897 字节，与 Kyber-1024 混合时为 129 + 1568 = 1697 字节；双方各自得到 32 字节的 SM2 共享秘密与 32 字节的抗量子共享秘密，拼接成 64 字节后按前述方式作为 (EC)DHE 输入送入 TLS 1.3 密钥调度。这样混合的意义在于"双保险"且兼顾合规：SM2 属于国产密码算法，本身是经典公钥算法、不具备抗量子能力，在混合中承担经典分量，既满足行业对国产密码的使用要求，又保留现有安全强度；抗量子 KEM 承担量子安全分量，提供抵御量子计算攻击的能力；任一分量未被攻破，会话密钥即安全。这一方向在标准化层面也已在推进，IETF 已有 SM2 与 ML-KEM-768 混合的草案（curveSM2MLKEM768，TLS 密钥交换算法码点 4590），与本课题的实现思路一致；本课题因采用 Kyber/ML-KEM 的 512 与 1024 参数集来分别满足 128 与 256 比特等级，故按 RFC 9954 的框架以私用码点（TLS 密钥交换算法码点 65024–65279 为私用段）实现 SM2Kyber512Draft00（0xfe34）与 SM2Kyber1024Draft00（0xfe37），避免与标准码点冲突。
 
-3) 双方按协商的密钥交换算法计算共享秘密，并在存在 PSK 时与 PSK 一起送入 TLS 1.3 的密钥调度
-   （HKDF，RFC 5869），派生出握手流量密钥 `client_handshake_traffic_secret`、
-   `server_handshake_traffic_secret`。此后服务端在受保护的信道上发送 `EncryptedExtensions`、
-   `Certificate`、`CertificateVerify`、`Finished`，客户端验证证书与签名后回 `Finished`。
+身份认证环节的抗量子改造同样可以采用"国产密码算法 + 抗量子算法"混合：服务端证书链中同时承载 SM2 公钥与抗量子 DSA 公钥，CertificateVerify 中给出对应的两份签名，客户端必须同时验证 SM2 签名与抗量子签名，两者都通过才认为服务端身份认证通过；也可以直接使用纯抗量子证书链。抗量子签名算法在 TLS 中通过 signature_algorithms 协商，ML-DSA 的 TLS 签名算法码点为 0x0904（ML-DSA-44）、0x0905（ML-DSA-65）、0x0906（ML-DSA-87），SLH-DSA 的码点为 0x0911 至 0x091C；证书层面的算法标识分别由 RFC 9881（ML-DSA）与 RFC 9909（SLH-DSA）规定。该环节的量子安全能力完全由抗量子 DSA 提供，SM2 签名在其中同样只起经典安全保障与国密合规的作用。
 
-4) 身份认证：服务端在 **Certificate** 消息中给出证书链（含签名公钥），并在 **CertificateVerify**
-   中用与证书对应的私钥对"签名上下文 + 此前全部握手报文的 Transcript-Hash"进行签名；客户端用
-   证书链验证公钥的可信性并验签，从而完成对服务端身份的认证。服务端也可通过 `CertificateRequest`
-   要求客户端提供证书，实现双向认证。
+由此可以给出 TLS 达到 128、256 比特量子安全等级所需的算法实例。按 NIST 安全类别的口径，类别 1 表示抗量子强度至少与 AES-128 的密钥搜索难度相当，类别 5 表示至少与 AES-256 相当，前者对应 128 比特量子安全等级，后者对应 256 比特量子安全等级；据此，TLS 达到 128 比特量子安全等级应使用 ML-KEM-512（FIPS 203，安全类别 1）或 HQC-128 作为密钥交换的抗量子分量，使用 ML-DSA-44（FIPS 204，安全类别 2，强度不低于 128 比特）作为身份认证的抗量子签名算法，并搭配 SHA-256 与 TLS_AES_128_GCM_SHA256 密码套件；达到 256 比特量子安全等级则应使用 ML-KEM-1024（安全类别 5）或 HQC-256 作为密钥交换的抗量子分量，使用 ML-DSA-87（安全类别 5）作为身份认证的抗量子签名算法，并搭配 SHA-384 与 TLS_AES_256_GCM_SHA384 密码套件，否则协议整体等级会被最低环节拉低。需要说明的是，HQC 于 2025 年 3 月被 NIST 选为第五个待标准化的抗量子 KEM 算法，目前尚未成为 FIPS 标准，TLS 侧也尚无 IANA 分配的码点，工程实现需使用私用码点，本课题即在私用段内实现 X25519HQC-128（0xfe38）与 X25519HQC-256（0xfe39）；而标准化程度更高的 ML-KEM 与 ML-DSA 已可直接使用标准码点，其中 X25519MLKEM768（TLS 码点 4588）等三项 PQ/T 混合组合由 RFC 10024 规定，纯抗量子组合 MLKEM512、MLKEM768、MLKEM1024 的码点为 512、513、514。综上所述，与 IPsec、SSH 的结论一致，要保证 TLS 协议可达到 128、256 比特量子安全，密钥交换和身份认证都应该达到 128、256 比特量子安全等级，即密钥交换过程的抗量子 KEM 原语的算法构造实例可达到 128、256 比特量子安全等级，身份认证过程的抗量子 DSA 原语的算法构造实例可达到 128、256 比特量子安全等级；具体而言，使用的密码算法应使用 ML-KEM-512 和 ML-KEM-1024、HQC-128 和 HQC-256 以及 ML-DSA-44 和 ML-DSA-87，国产密码算法则以 SM2 等作为经典分量与上述抗量子算法混合使用。
 
-5) 握手完成后，由主密钥（master secret）派生出应用流量密钥
-   （`client_application_traffic_secret_N`、`server_application_traffic_secret_N`）以及导出密钥
-   （`exporter_master_secret`），使用 AEAD 算法（`TLS_AES_128_GCM_SHA256`、
-   `TLS_AES_256_GCM_SHA384`、`TLS_CHACHA20_POLY1305_SHA256`）保护应用数据，并可通过 `KeyUpdate`
-   更新密钥。
+上述论证所依据的标准与依据包括：TLS 1.3 基础协议为 RFC 9846；混合密钥交换的构造框架为 RFC 9954（Informational，2026 年 7 月），其中 §3.2 规定公钥与密文直接拼接且不带长度字段、§3.3 规定共享秘密拼接后作为 (EC)DHE 输入送入密钥调度、§4 规定 key_exchange 字段上限为 2^16−1 字节、§6 给出双 PRF 组合器的安全性分析；具体 PQ/T 混合组合由 RFC 10024（Standards Track，2026 年 8 月）规定，即 X25519MLKEM768（码点 4588，其拼接顺序为 ML-KEM 在前、X25519 在后，与组名顺序相反）、SecP256r1MLKEM768（4587）与 SecP384r1MLKEM1024（4589），并废弃了标准化前的 Kyber768 实验码点（X25519Kyber768Draft00，25497）；纯抗量子 KEM 组合 MLKEM512/768/1024 的码点为 512/513/514；混合方案术语见 RFC 9794；抗量子算法的标准依据为 FIPS 203（ML-KEM）、FIPS 204（ML-DSA）、FIPS 205（SLH-DSA），以及 NIST 于 2025 年 3 月选定 HQC 的公告；TLS 侧抗量子签名算法码点由 IANA 按 RFC-ietf-tls-mldsa 等文档登记，证书算法标识见 RFC 9881 与 RFC 9909。
 
-其中第 1)~3) 步决定**通信机密性**，第 4) 步决定**身份真实性**；两者分别由密钥交换原语与签名原语
-提供密码学保障。
+## 附：本课题已实现的混合组合与实测 key_share 长度（用于核对实现是否符合上述拼接规则）
 
-## 2. TLS 协议的抗量子改造
+| 混合组合 | 密钥交换算法码点 | 量子安全等级 | ClientHello key_share（字节） | ServerHello key_share（字节） |
+|---|---|---|---|---|
+| SM2Kyber512Draft00（SM2 与 Kyber-512 混合） | 0xfe34（私用段） | 128 比特 | 865 = SM2 公钥 65 + 抗量子封装公钥 800 | 897 = SM2 密文 129 + 抗量子封装密文 768 |
+| X25519Kyber512Draft00 | 0xfe30（私用段） | 128 比特 | 832 = 32 + 800 | 800 = 32 + 768 |
+| X25519Kyber768Draft00 | 0x6399（RFC 10024 已废弃的标准化前码点） | 192 比特 | 1216 = 32 + 1184 | 1120 = 32 + 1088 |
+| SM2Kyber1024Draft00（SM2 与 Kyber-1024 混合） | 0xfe37（私用段） | 256 比特 | 1633 = 65 + 1568 | 1697 = 129 + 1568 |
+| X25519Kyber1024Draft00 | 0xfe36（私用段） | 256 比特 | 1600 = 32 + 1568 | 1600 = 32 + 1568 |
+| X25519HQC-128 | 0xfe38（私用段） | 128 比特 | 2281 = 32 + 2249 | 4465 = 32 + 4433 |
+| X25519HQC-256 | 0xfe39（私用段） | 256 比特 | 7277 = 32 + 7245 | 14453 = 32 + 14421 |
 
-与 IPsec（IKEv2 的 IKE_SA_INIT / IKE_INTERMEDIATE + IKE_AUTH）和 SSH（密钥交换 + 主机密钥签名）
-一致，TLS 的抗量子改造同样是在**密钥交换阶段加入抗量子/混合密钥交换**、在**身份认证阶段加入
-抗量子签名认证**：
-
-1) **算法协商阶段**：`supported_groups` 与 `key_share` 中除传统 ECDH 群外，加入抗量子 KEM 群或
-   "经典 ECDH + 抗量子 KEM"的混合群；`signature_algorithms` 中加入抗量子签名算法，
-   `Certificate`/`CertificateVerify` 中承载抗量子签名公钥与签名。
-
-2) **混合密钥交换的具体交互**（以"ECDH + KEM"混合群为例）：
-
-   ```
-   客户端                                                     服务端
-     │ ClientHello：supported_groups = [混合群, …]                │
-     │             key_share(混合群) = ECDH 公钥 ‖ KEM 封装公钥    │
-     │ ─────────────────────────────────────────────────────────► │
-     │                                                            │ ① 计算经典 ECDH 共享秘密 K_CL
-     │                                                            │ ② 用客户端 KEM 公钥封装 → (KEM 密文, K_PQ)
-     │ ◄───────────────────────────────────────────────────────── │
-     │ ServerHello：key_share(混合群) = ECDH 公钥 ‖ KEM 密文       │
-     │ ① 计算经典 ECDH 共享秘密 K_CL                               │
-     │ ② 用本机 KEM 私钥解封装 → K_PQ                              │
-     ▼                                                            ▼
-         concatenated_shared_secret = K_CL ‖ K_PQ  ──► 作为 (EC)DHE 输入送入 TLS 1.3 密钥调度
-   ```
-
-   具体到报文与字节布局，TLS 的做法是**直接拼接、不带任何长度字段或额外编码**
-   （RFC 9954 §3.2）：混合群被表示为一个 `NamedGroup`，其 `KeyShareEntry.key_exchange` 就是各分量
-   `key_exchange` 的拼接，拼接顺序必须与该 `NamedGroup` 定义中的算法顺序一致；客户端份额是各分量
-   公钥（ECDH 份额 / KEM 封装公钥）的拼接，服务端份额是各分量公钥与 KEM 封装密文的拼接。
-   共享秘密同样按 `concatenated_shared_secret = ECDH 共享秘密 ‖ KEM 共享秘密` 拼接（RFC 9954 §3.3）。
-
-   **这一点与 SSH 的表述需要区分**：SSH 中最终共享密钥是 K = HASH(K_CL ‖ K_PQ)，即对拼接结果
-   再做一次哈希；而 TLS 1.3 **不再额外做一次 HASH**，而是把这个拼接结果**直接作为密钥调度中的
-   (EC)DHE 输入**：
-
-   ```
-   Handshake Secret = HKDF-Extract( Derive-Secret(Early Secret, "derived", ""),
-                                    concatenated_shared_secret )          （RFC 9954 §3.3 图 1）
-   ```
-
-   再由 `Derive-Secret` / `HKDF-Expand-Label` 依次派生出上述各类握手与应用流量密钥
-   （RFC 9846 的密钥调度）。由于 HKDF-Extract 关于其输入具备 dual-PRF 性质，该构造被证明
-   与"双 PRF 组合器"等价（RFC 9954 §6）：**只要经典 ECDH 与抗量子 KEM 任一分量未被攻破，
-   派生出的会话密钥即安全**。因此混合组同时具备经典安全与量子安全——量子攻击者可以破解 ECDH
-   分量，但只要抗量子 KEM 分量未被攻破，握手密钥仍然安全；反之亦然。混合构造不增加额外往返，
-   也保持了与不支持混合群的端点之间的兼容回退（RFC 9954 §1.4）。
-
-3) **身份认证阶段**：服务端（双向认证时还包括客户端）在 `Certificate` 中承载抗量子（或"经典 +
-   抗量子"混合）证书，在 `CertificateVerify` 中给出抗量子 DSA 签名；对端用证书中的抗量子公钥验签。
-   由于 TLS 1.3 的签名同时覆盖签名上下文与此前全部握手报文的 Transcript-Hash，认证与密钥交换
-   被绑定在一起，攻击者无法在不被察觉的情况下替换或降级认证算法。混合签名时需经典签名与抗量子
-   签名**同时验证通过**，才认为身份认证通过；该阶段的量子安全能力完全由抗量子 DSA 提供。
-
-4) **量子安全等级的来源**：TLS 的交互逻辑（ClientHello / ServerHello / key_share / 密钥调度 /
-   CertificateVerify）本身不携带量子安全能力，量子安全来自被实例化的密码原语。因此：
-
-   - **密钥交换阶段**的量子安全等级取决于抗量子 KEM 算法，以及密钥调度所用的哈希/SHA-2 算法
-     （128 比特等级对应 SHA-256，256 比特等级对应 SHA-384）；
-   - **身份认证阶段**的量子安全等级取决于抗量子 DSA 算法；
-   - **应用数据保护**的等级取决于所选 AEAD 套件（`TLS_AES_128_GCM_SHA256` 为 128 比特、
-     `TLS_AES_256_GCM_SHA384` 为 256 比特）；
-   - 协议的**整体量子安全等级取上述各环节中最低者**，因此要达到 256 比特，不能只升级签名算法。
-
-## 3. 达到 128、256 比特量子安全等级的算法要求
-
-按前述 NIST 安全类别划分：安全类别 1 表示"抗量子强度至少与 AES-128 的密钥搜索难度相当"，
-安全类别 5 表示"至少与 AES-256 相当"。据此，TLS 协议要分别达到 128、256 比特量子安全等级，
-其密钥交换与身份认证所使用的抗量子原语应满足：
-
-| 环节 | 128 比特量子安全等级 | 256 比特量子安全等级 | 依据 |
-|---|---|---|---|
-| 密钥交换（抗量子 KEM） | **ML-KEM-512**（安全类别 1）、**HQC-128** | **ML-KEM-1024**（安全类别 5）、**HQC-256** | FIPS 203；HQC 提交文档 |
-| 身份认证（抗量子 DSA） | **ML-DSA-44**（安全类别 2，≥128 比特） | **ML-DSA-87**（安全类别 5） | FIPS 204 |
-| 密钥调度哈希 | SHA-256 | SHA-384 | RFC 9846 密钥调度 |
-| 应用数据 AEAD | `TLS_AES_128_GCM_SHA256` | `TLS_AES_256_GCM_SHA384` | RFC 9846 |
-
-几点补充说明：
-
-- ML-KEM-512 与 ML-KEM-1024 为 FIPS 203 标准参数集，其公钥/密文分别为 800/768 字节与
-  1568/1568 字节，均远小于 TLS `key_exchange` 字段 2^16−1 字节的上限（RFC 9954 §4），可直接承载。
-- HQC 于 2025 年 3 月被 NIST 选为第五个待标准化的抗量子 KEM 算法，其 HQC-128/HQC-256 参数集
-  分别对应 128/256 比特强度；截至本文写作时 HQC 尚未成为 FIPS 标准，TLS 侧也尚无 IANA 码点，
-  因此工程实现需使用私用码点（见 §5）。
-- ML-DSA-44 在 FIPS 204 中的安全类别为**类别 2**（要求同时不低于 SHA-256 的抗碰撞强度），
-  高于类别 1，故满足"128 比特量子安全等级"；ML-DSA-87 为类别 5，对应 256 比特。
-- 需要 256 比特整体等级时，必须同时使用 ML-KEM-1024/HQC-256、ML-DSA-87 **以及**
-  `TLS_AES_256_GCM_SHA384`；若密钥交换用 256 比特而对称套件仍选
-  `TLS_AES_128_GCM_SHA256`，整体等级会退化为 128 比特。
-
-**结论**：与 IPsec、SSH 相同，要保证 TLS 协议可达到 128、256 比特量子安全，密钥交换和身份认证
-都应该达到 128、256 比特量子安全等级，即密钥交换过程的抗量子 KEM 原语的算法构造实例可达到
-128、256 比特量子安全等级，身份认证过程的抗量子 DSA 原语的算法构造实例可达到 128、256 比特
-量子安全等级。具体而言，使用的密码算法应使用 **ML-KEM-512 和 ML-KEM-1024、HQC-128 和 HQC-256
-以及 ML-DSA-44 和 ML-DSA-87**。
-
-## 4. TLS 侧"协议逻辑—密码原语"的实例化对应关系
-
-| 协议环节（交互逻辑） | 无量子安全能力时的原语 | 抗量子实例化后的原语 | TLS 中的承载方式 |
-|---|---|---|---|
-| 密钥交换：`key_share` 交换公钥/密文 | ECDH（X25519、secp256r1、SM2 等） | KEM：KeyGen / Encaps / Decaps（ML-KEM、HQC）；或 ECDH+KEM 混合 | `supported_groups` 扩展中的 `NamedGroup` + `key_share` 扩展中的 `KeyShareEntry` |
-| 共享秘密合成 | 单一 ECDH 共享秘密 | `concatenated_shared_secret = K_CL ‖ K_PQ`，作为 (EC)DHE 输入送入密钥调度 | RFC 9954 §3.3，TLS 1.3 HKDF 密钥调度 |
-| 身份认证：对握手报文签名 | RSA / ECDSA / EdDSA / SM2 签名 | ML-DSA、SLH-DSA（或"经典 + 抗量子"混合签名） | `Certificate` + `CertificateVerify`，算法经 `signature_algorithms` 协商 |
-| 证书公钥与签名算法标识 | RSA/ECDSA 的 X.509 算法标识 | ML-DSA / SLH-DSA 的 X.509 算法标识（OID） | RFC 9881（ML-DSA）、RFC 9909（SLH-DSA） |
-| 密钥派生与应用数据保护 | 经典 HKDF + AES-GCM | HKDF（SHA-256/SHA-384）+ AES-128/256-GCM | RFC 9846 密钥调度与密码套件 |
-
-由上表可见：**密钥交换阶段**的量子安全由 KEM 原语（ML-KEM / HQC）提供，**身份认证阶段**的
-量子安全由 DSA 原语（ML-DSA / SLH-DSA）提供，二者与 IPsec、SSH 的对应关系完全一致，区别仅在于
-TLS 1.3 把混合共享秘密的合成放在 HKDF 密钥调度的 (EC)DHE 输入位置上。
-
-## 5. 标准依据、码点与当前状态（逐条核对）
-
-### 5.1 协议与框架类标准
-
-| 标准 | 标题与状态 | 与本指标的关系 |
-|---|---|---|
-| RFC 9846 | The Transport Layer Security (TLS) Protocol Version 1.3，2026-07 | TLS 1.3 基础协议：`supported_groups`/`key_share`（§4.2.8）、`signature_algorithms`、`Certificate`/`CertificateVerify`、HKDF 密钥调度 |
-| RFC 9954 | Hybrid Key Exchange in TLS 1.3，Informational，2026-07 | 混合密钥交换框架：§3.1 以 `NamedGroup` 协商、§3.2 公钥/密文直接拼接、§3.3 共享秘密拼接并作为 (EC)DHE 输入、§4 长度上限 2^16−1、§6 dual-PRF 组合器安全性 |
-| RFC 10024 | Post-Quantum Traditional (PQ/T) Hybrid Key Agreement Mechanisms for TLS 1.3，Standards Track，2026-08 | 具体的 PQ/T 混合组：X25519MLKEM768、SecP256r1MLKEM768、SecP384r1MLKEM1024；并废弃早期 Kyber768 实验码点 |
-| RFC 9794 | Terminology for Post-Quantum Traditional Hybrid Schemes，2025-06 | PQ/T 混合方案的术语（traditional / next-generation 等） |
-| RFC 5869 | HMAC-based Extract-and-Expand Key Derivation Function (HKDF) | TLS 1.3 密钥调度的算法基础 |
-
-### 5.2 密钥交换：TLS Supported Groups 码点
-
-| 群名称 | 码点 | 组合与量子安全等级 | 依据 |
-|---|---|---|---|
-| MLKEM512 | 512（0x0200） | 纯抗量子 ML-KEM-512，128 比特 | IANA TLS Supported Groups（RFC-ietf-tls-mlkem） |
-| MLKEM768 | 513（0x0201） | 纯抗量子 ML-KEM-768，192 比特 | 同上 |
-| MLKEM1024 | 514（0x0202） | 纯抗量子 ML-KEM-1024，256 比特 | 同上 |
-| SecP256r1MLKEM768 | 4587（0x11EB） | secp256r1 + ML-KEM-768，192 比特 | RFC 10024 |
-| **X25519MLKEM768** | **4588（0x11EC）** | X25519 + ML-KEM-768，192 比特（IANA 标记 Recommended=Y） | RFC 10024 |
-| SecP384r1MLKEM1024 | 4589（0x11ED） | secp384r1 + ML-KEM-1024，256 比特 | RFC 10024 |
-| curveSM2MLKEM768 | 4590（0x11EE） | SM2 + ML-KEM-768，192 比特 | 草案 draft-yang-tls-hybrid-sm2-mlkem-03 |
-| X25519Kyber768Draft00 | 25497（0x6399） | 标准化前的 Kyber768 实验码点，**已由 RFC 10024 废弃** | RFC 10024 §7.4 |
-| SecP256r1Kyber768Draft00 | 25498（0x639A） | 同上，已废弃 | RFC 10024 §7.4 |
-
-长度核对（RFC 10024 §4.1/§4.2/§4.3，可用抓包直接验证）：
-
-| 群 | 客户端 `key_exchange` | 服务端 `key_exchange` | 共享秘密 |
-|---|---|---|---|
-| X25519MLKEM768 | 1216 = ML-KEM-768 封装公钥 1184 + X25519 32 | 1120 = ML-KEM 密文 1088 + X25519 32 | 64 = ML-KEM 32 + X25519 32 |
-| SecP256r1MLKEM768 | 1249 = secp256r1 65 + ML-KEM 1184 | 1153 = secp256r1 65 + ML-KEM 1088 | 64 |
-| SecP384r1MLKEM1024 | 1665 = secp384r1 97 + ML-KEM 1568 | 1665 = secp384r1 97 + ML-KEM 1568 | 80 = ECDHE 48 + ML-KEM 32 |
-
-> 注意：`X25519MLKEM768` 的名称顺序与拼接顺序**相反**（实际为 ML-KEM 在前、X25519 在后），
-> 这是历史原因造成的，RFC 10024 已明确说明；`SecP256r1MLKEM768`、`SecP384r1MLKEM1024`
-> 则是 ECDHE 在前。核对拼接结构时必须按此顺序判断，不能只看组名。
-
-### 5.3 身份认证：抗量子签名算法与码点
-
-| 算法 | TLS SignatureScheme 码点 | 量子安全等级 | X.509 算法标识 |
-|---|---|---|---|
-| ML-DSA-44 | 0x0904 | 安全类别 2（≥128 比特） | RFC 9881 |
-| ML-DSA-65 | 0x0905 | 安全类别 3（192 比特） | RFC 9881 |
-| ML-DSA-87 | 0x0906 | 安全类别 5（256 比特） | RFC 9881 |
-| SLH-DSA-SHA2/SHAKE 128s/128f | 0x0911–0x0912、0x0917–0x0918 | 128 比特 | RFC 9909 |
-| SLH-DSA-SHA2/SHAKE 192s/192f | 0x0913–0x0914、0x0919–0x091A | 192 比特 | RFC 9909 |
-| SLH-DSA-SHA2/SHAKE 256s/256f | 0x0915–0x0916、0x091B–0x091C | 256 比特 | RFC 9909 |
-
-（ML-DSA 在 TLS 中的码点由 IANA 按 `RFC-ietf-tls-mldsa` 登记；SLH-DSA 在 TLS 中的码点见
-`draft-reddy-tls-slhdsa`。Falcon 尚在标准推进过程中，对应的 FIPS 206 尚未发布，故本文不列为
-可选实例。）
-
-### 5.4 私用码点与工程实现约定
-
-- TLS Supported Groups 注册表中 **65024–65279（0xFE00–0xFEFF）为 Private Use**，
-  TLS SignatureScheme 注册表中 **0xFE00–0xFFFF 为 Private Use**（RFC 9846）。
-  在尚无 IANA 码点的算法（如 HQC）以及本课题自定义的混合组合上，工程实现使用该私用段，
-  不与标准码点冲突。
-- 本课题 TLS 侧已实现并逐条实测的密钥交换组合（含每个组合的 key_share 长度，均按
-  "经典分量拼接抗量子分量、不带长度字段"实现，与 RFC 9954 §3.2/§3.3 一致）：
-
-  | 组合 | 码点 | 量子安全等级 | ClientHello / ServerHello 的 key_share 长度（字节） |
-  |---|---|---|---|
-  | SM2Kyber512Draft00 | 0xfe34（私用） | 128 比特 | 865 / 897 |
-  | X25519Kyber512Draft00 | 0xfe30（私用） | 128 比特 | 832 / 800 |
-  | X25519Kyber768Draft00 | 0x6399（RFC 10024 已废弃码点） | 192 比特 | 1216 / 1120 |
-  | X25519Kyber1024Draft00 | 0xfe36（私用） | 256 比特 | 1600 / 1600 |
-  | SM2Kyber1024Draft00 | 0xfe37（私用） | 256 比特 | 1633 / 1697 |
-  | X25519HQC-128 | 0xfe38（私用） | 128 比特 | 2281 / 4465 |
-  | X25519HQC-256 | 0xfe39（私用） | 256 比特 | 7277 / 14453 |
-
-  其中 HQC 由 liboqs 提供（HQC-128 公钥 2249 / 密文 4433 字节，HQC-256 公钥 7245 / 密文 14421
-  字节，与上表拼接后的长度一致）。
-- 本课题证书侧已实现并验证的抗量子签名链包括：ML-DSA-44/65/87、SLH-DSA-SHA2-128s/192f/256s、
-  以及"SM2 + ML-DSA-87"等双重签名组合，对应 TLS-1-x/3-x 系列测试用例（见
-  `docs/测试大纲-输入及操作-细化.md`）；签名与密钥交换的长度、协商结果均可由抓包脚本
-  `tools/tls_hello_check.py` 直接断言。
-
-## 6. 参考
-
-- RFC 9846 TLS 1.3：<https://www.rfc-editor.org/rfc/rfc9846.txt>
-- RFC 9954 Hybrid Key Exchange in TLS 1.3：<https://www.rfc-editor.org/rfc/rfc9954.txt>
-- RFC 10024 PQ/T Hybrid Key Agreement Mechanisms for TLS 1.3：<https://www.rfc-editor.org/rfc/rfc10024.txt>
-- RFC 9794 Terminology for PQ/T Hybrid Schemes：<https://www.rfc-editor.org/info/rfc9794>
-- IANA TLS Supported Groups：<https://www.iana.org/assignments/tls-parameters/tls-parameters-8.csv>
-- IANA TLS SignatureScheme：<https://www.iana.org/assignments/tls-parameters/tls-signaturescheme.csv>
-- RFC 9881 ML-DSA in X.509：<https://www.rfc-editor.org/info/rfc9881>
-- RFC 9909 SLH-DSA in X.509：<https://www.rfc-editor.org/info/rfc9909>
-- FIPS 203（ML-KEM）、FIPS 204（ML-DSA）、FIPS 205（SLH-DSA）：<https://csrc.nist.gov/pubs/fips/203/final>
-- NIST Selects HQC as Fifth Algorithm for Post-Quantum Encryption（2025-03）：
-  <https://www.nist.gov/news-events/news/2025/03/nist-selects-hqc-fifth-algorithm-post-quantum-encryption>
+上表长度均已通过真实抓包与解析脚本 `tools/tls_hello_check.py` 逐组验证（该脚本内置 RFC 9954 §3.2 的预期长度表，可对抓包直接断言）；证书侧已实现并验证 ML-DSA-44/65/87、SLH-DSA-SHA2-128s/192f/256s 以及「SM2 + ML-DSA-87」等双重签名证书链，对应的测试用例与操作步骤见 `docs/测试大纲-输入及操作-细化.md`。
