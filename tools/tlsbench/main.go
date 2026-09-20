@@ -45,6 +45,10 @@ var kexByName = map[string]tls.CurveID{
 	"X25519HQC-256":          tls.X25519HQC256,
 	"X25519HQC1":             tls.X25519HQC128,
 	"X25519HQC5":             tls.X25519HQC256,
+	"SM2HQC-128":             tls.SM2HQC128,
+	"SM2HQC-256":             tls.SM2HQC256,
+	"SM2HQC1":                tls.SM2HQC128,
+	"SM2HQC5":                tls.SM2HQC256,
 }
 
 var kexDisplayName = map[tls.CurveID]string{
@@ -56,6 +60,8 @@ var kexDisplayName = map[tls.CurveID]string{
 	tls.X25519Kyber1024Draft00: "X25519Kyber1024Draft00",
 	tls.X25519HQC128:           "X25519HQC-128",
 	tls.X25519HQC256:           "X25519HQC-256",
+	tls.SM2HQC128:              "SM2HQC-128",
+	tls.SM2HQC256:              "SM2HQC-256",
 	tls.DummyKex:               "DummyKex",
 	tls.X25519:                 "X25519",
 }

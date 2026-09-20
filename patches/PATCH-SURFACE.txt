@@ -1,7 +1,4 @@
-只在 <GOROOT>/src/cmd/cgo 中存在：zdefaultcc.go
-只在 <GOROOT>/src/cmd/go/internal/cfg 中存在：zdefaultcc.go
-只在 <GOROOT>/src/cmd/internal/objabi 中存在：zbootstrap.go
-只在 <GOROOT>/src/crypto 中存在：.DS_Store
+只在 src/ （上游）crypto 中存在：.DS_Store
 文件 src/ （上游）crypto/tls/alert.go 和 <GOROOT>/src/crypto/tls/alert.go 不同
 文件 src/ （上游）crypto/tls/auth.go 和 <GOROOT>/src/crypto/tls/auth.go 不同
 文件 src/ （上游）crypto/tls/auth_test.go 和 <GOROOT>/src/crypto/tls/auth_test.go 不同
@@ -38,14 +35,8 @@
 只在 <GOROOT>/src/crypto/tls 中存在：tls_cf_test.go
 文件 src/ （上游）crypto/tls/tls.go 和 <GOROOT>/src/crypto/tls/tls.go 不同
 文件 src/ （上游）crypto/tls/tls_test.go 和 <GOROOT>/src/crypto/tls/tls_test.go 不同
-只在 <GOROOT>/src/crypto 中存在：tls1
-只在 <GOROOT>/src 中存在：.DS_Store
-只在 <GOROOT>/src/go/build 中存在：zcgo.go
-只在 <GOROOT>/src/internal/buildcfg 中存在：zbootstrap.go
-只在 <GOROOT>/src/runtime/internal/sys 中存在：zversion.go
-只在 <GOROOT>/src/time/tzdata 中存在：zzipdata.go
-只在 <GOROOT>/src/vendor 中存在：github.com
-只在 <GOROOT>/src/vendor/golang.org/x/crypto 中存在：blake2b
-只在 <GOROOT>/src/vendor/golang.org/x/crypto 中存在：blake2s
+只在 src/ （上游）crypto 中存在：tls1
+只在 src/（上游） 中存在：.DS_Store
+文件 src/ （上游）vendor/github.com/cloudflare/circl/kem/hybrid/hybrid.go 和 <GOROOT>/src/vendor/github.com/cloudflare/circl/kem/hybrid/hybrid.go 不同
 文件 src/ （上游）vendor/modules.txt 和 <GOROOT>/src/vendor/modules.txt 不同
-只在 <GOROOT>/src 中存在：vendor1
+只在 src/（上游） 中存在：vendor1

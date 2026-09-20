@@ -1,5 +1,5 @@
 diff -ruN a/src/crypto/tls/alert.go b/src/crypto/tls/alert.go
---- a/src/crypto/tls/alert.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/alert.go	2026-09-20 21:11:15.851927882 +0800
 +++ b/src/crypto/tls/alert.go	2025-03-17 11:59:42.000000000 +0800
 @@ -58,6 +58,7 @@
  	alertUnknownPSKIdentity           alert = 115
@@ -18,7 +18,7 @@ diff -ruN a/src/crypto/tls/alert.go b/src/crypto/tls/alert.go
  
  func (e alert) String() string {
 diff -ruN a/src/crypto/tls/auth.go b/src/crypto/tls/auth.go
---- a/src/crypto/tls/auth.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/auth.go	2026-09-20 21:11:15.852389192 +0800
 +++ b/src/crypto/tls/auth.go	2025-03-17 11:59:42.000000000 +0800
 @@ -15,6 +15,9 @@
  	"fmt"
@@ -132,7 +132,7 @@ diff -ruN a/src/crypto/tls/auth.go b/src/crypto/tls/auth.go
  // that works with the selected certificate. It's only called for protocol
  // versions that support signature algorithms, so TLS 1.2 and 1.3.
 diff -ruN a/src/crypto/tls/auth_test.go b/src/crypto/tls/auth_test.go
---- a/src/crypto/tls/auth_test.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/auth_test.go	2026-09-20 21:11:15.852702584 +0800
 +++ b/src/crypto/tls/auth_test.go	2025-03-17 11:59:42.000000000 +0800
 @@ -7,6 +7,8 @@
  import (
@@ -355,8 +355,8 @@ diff -ruN a/src/crypto/tls/cfgo_test.go b/src/crypto/tls/cfgo_test.go
 +}
 diff -ruN a/src/crypto/tls/cfkem.go b/src/crypto/tls/cfkem.go
 --- a/src/crypto/tls/cfkem.go	1970-01-01 08:00:00.000000000 +0800
-+++ b/src/crypto/tls/cfkem.go	2026-09-18 14:12:50.832068796 +0800
-@@ -0,0 +1,126 @@
++++ b/src/crypto/tls/cfkem.go	2026-09-20 21:09:13.414201029 +0800
+@@ -0,0 +1,133 @@
 +// Copyright 2022 Cloudflare, Inc. All rights reserved. Use of this source code
 +// is governed by a BSD-style license that can be found in the LICENSE file.
 +//
@@ -403,15 +403,18 @@ diff -ruN a/src/crypto/tls/cfkem.go b/src/crypto/tls/cfkem.go
 +	P256Kyber768Draft00      = CurveID(0xfe32)
 +	X25519MLKEM768           = CurveID(0x11ec)
 +	//write by drew
-+	SM2Kyber512Draft00       = CurveID(0xfe34)
-+	SM2Kyber768Draft00       = CurveID(0xfe35)
++	SM2Kyber512Draft00 = CurveID(0xfe34)
++	SM2Kyber768Draft00 = CurveID(0xfe35)
 +	// 256 比特量子安全等级：Kyber-1024 混合组
-+	X25519Kyber1024Draft00   = CurveID(0xfe36)
-+	SM2Kyber1024Draft00      = CurveID(0xfe37)
++	X25519Kyber1024Draft00 = CurveID(0xfe36)
++	SM2Kyber1024Draft00    = CurveID(0xfe37)
 +	// HQC 混合组（需 -tags pq_hqc 且链接 liboqs；默认构建下不支持）
-+	X25519HQC128             = CurveID(0xfe38)
-+	X25519HQC256             = CurveID(0xfe39)
-+	invalidCurveID           = CurveID(0)
++	X25519HQC128 = CurveID(0xfe38)
++	X25519HQC256 = CurveID(0xfe39)
++	// SM2 与 HQC 的混合组（国密 + 编码类抗量子；同样需 -tags pq_hqc 且链接 liboqs）
++	SM2HQC128      = CurveID(0xfe3a)
++	SM2HQC256      = CurveID(0xfe3b)
++	invalidCurveID = CurveID(0)
 +
 +	// A key agreeement similar in size but purposefully incompatible with
 +	// X25519. The goal is to have a key agreement that servers will not
@@ -436,17 +439,21 @@ diff -ruN a/src/crypto/tls/cfkem.go b/src/crypto/tls/cfkem.go
 +	case X25519MLKEM768:
 +		return hybrid.X25519MLKEM768()
 +	case SM2Kyber512Draft00:
-+	    return hybrid.Kyber512sm2()
++		return hybrid.Kyber512sm2()
 +	case SM2Kyber768Draft00:
-+	    return hybrid.Kyber768sm2()
++		return hybrid.Kyber768sm2()
 +	case X25519Kyber1024Draft00:
 +		return hybrid.Kyber1024X25519()
 +	case SM2Kyber1024Draft00:
-+	    return hybrid.Kyber1024sm2()
++		return hybrid.Kyber1024sm2()
 +	case X25519HQC128:
 +		return newHQCScheme("HQC-128")
 +	case X25519HQC256:
 +		return newHQCScheme("HQC-256")
++	case SM2HQC128:
++		return newSM2HQCScheme("HQC-128")
++	case SM2HQC256:
++		return newSM2HQCScheme("HQC-256")
 +	case DummyKex:
 +		return hpke.KEM_X25519_HKDF_SHA256.Scheme()
 +	}
@@ -641,7 +648,7 @@ diff -ruN a/src/crypto/tls/cfkem_test.go b/src/crypto/tls/cfkem_test.go
 +	}
 +}
 diff -ruN a/src/crypto/tls/common.go b/src/crypto/tls/common.go
---- a/src/crypto/tls/common.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/common.go	2026-09-20 21:11:15.854636194 +0800
 +++ b/src/crypto/tls/common.go	2025-03-17 11:59:42.000000000 +0800
 @@ -112,6 +112,7 @@
  	extensionALPN                    uint16 = 16
@@ -946,7 +953,7 @@ diff -ruN a/src/crypto/tls/common.go b/src/crypto/tls/common.go
  	// using x509.ParseCertificate to reduce per-handshake processing. If nil,
  	// the leaf certificate will be parsed as needed.
 diff -ruN a/src/crypto/tls/conn.go b/src/crypto/tls/conn.go
---- a/src/crypto/tls/conn.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/conn.go	2026-09-20 21:11:15.855533072 +0800
 +++ b/src/crypto/tls/conn.go	2025-03-17 11:59:42.000000000 +0800
 @@ -21,6 +21,8 @@
  	"sync"
@@ -4821,7 +4828,7 @@ diff -ruN a/src/crypto/tls/ech_test.go b/src/crypto/tls/ech_test.go
 +	})
 +}
 diff -ruN a/src/crypto/tls/generate_cert.go b/src/crypto/tls/generate_cert.go
---- a/src/crypto/tls/generate_cert.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/generate_cert.go	2026-09-20 21:11:15.859134883 +0800
 +++ b/src/crypto/tls/generate_cert.go	2025-03-17 11:59:42.000000000 +0800
 @@ -25,6 +25,9 @@
  	"os"
@@ -5018,7 +5025,7 @@ diff -ruN a/src/crypto/tls/generate_delegated_credential.go b/src/crypto/tls/gen
 +	return nil, errors.New("tls: failed to parse private key")
 +}
 diff -ruN a/src/crypto/tls/handshake_client.go b/src/crypto/tls/handshake_client.go
---- a/src/crypto/tls/handshake_client.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/handshake_client.go	2026-09-20 21:11:15.859799829 +0800
 +++ b/src/crypto/tls/handshake_client.go	2025-03-17 11:59:42.000000000 +0800
 @@ -8,7 +8,6 @@
  	"bytes"
@@ -5309,7 +5316,7 @@ diff -ruN a/src/crypto/tls/handshake_client.go b/src/crypto/tls/handshake_client
  
  	var rsaAvail, ecAvail bool
 diff -ruN a/src/crypto/tls/handshake_client_tls13.go b/src/crypto/tls/handshake_client_tls13.go
---- a/src/crypto/tls/handshake_client_tls13.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/handshake_client_tls13.go	2026-09-20 21:11:15.860490941 +0800
 +++ b/src/crypto/tls/handshake_client_tls13.go	2025-03-17 11:59:42.000000000 +0800
 @@ -11,29 +11,79 @@
  	"crypto/ecdh"
@@ -6073,7 +6080,7 @@ diff -ruN a/src/crypto/tls/handshake_client_tls13.go b/src/crypto/tls/handshake_
 +	return nil
 +}
 diff -ruN a/src/crypto/tls/handshake_messages.go b/src/crypto/tls/handshake_messages.go
---- a/src/crypto/tls/handshake_messages.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/handshake_messages.go	2026-09-20 21:11:15.861108181 +0800
 +++ b/src/crypto/tls/handshake_messages.go	2025-03-17 11:59:42.000000000 +0800
 @@ -82,9 +82,11 @@
  	sessionTicket                    []uint8
@@ -6365,7 +6372,7 @@ diff -ruN a/src/crypto/tls/handshake_messages.go b/src/crypto/tls/handshake_mess
  				// Ignore unknown extensions.
  				continue
 diff -ruN a/src/crypto/tls/handshake_messages_test.go b/src/crypto/tls/handshake_messages_test.go
---- a/src/crypto/tls/handshake_messages_test.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/handshake_messages_test.go	2026-09-20 21:11:15.861413889 +0800
 +++ b/src/crypto/tls/handshake_messages_test.go	2025-03-17 11:59:42.000000000 +0800
 @@ -164,6 +164,10 @@
  	if rand.Intn(10) > 5 {
@@ -6401,7 +6408,7 @@ diff -ruN a/src/crypto/tls/handshake_messages_test.go b/src/crypto/tls/handshake
  		for i := 0; i < rand.Intn(2)+1; i++ {
  			m.certificate.SignedCertificateTimestamps = append(
 diff -ruN a/src/crypto/tls/handshake_server.go b/src/crypto/tls/handshake_server.go
---- a/src/crypto/tls/handshake_server.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/handshake_server.go	2026-09-20 21:11:15.861788623 +0800
 +++ b/src/crypto/tls/handshake_server.go	2025-03-17 11:59:42.000000000 +0800
 @@ -17,6 +17,8 @@
  	"hash"
@@ -6517,7 +6524,7 @@ diff -ruN a/src/crypto/tls/handshake_server.go b/src/crypto/tls/handshake_server
  	}
  }
 diff -ruN a/src/crypto/tls/handshake_server_test.go b/src/crypto/tls/handshake_server_test.go
---- a/src/crypto/tls/handshake_server_test.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/handshake_server_test.go	2026-09-20 21:11:15.862269063 +0800
 +++ b/src/crypto/tls/handshake_server_test.go	2025-03-17 11:59:42.000000000 +0800
 @@ -1934,6 +1934,7 @@
  					supportedVersions:  []uint16{VersionTLS13},
@@ -6528,7 +6535,7 @@ diff -ruN a/src/crypto/tls/handshake_server_test.go b/src/crypto/tls/handshake_s
  			}
  
 diff -ruN a/src/crypto/tls/handshake_server_tls13.go b/src/crypto/tls/handshake_server_tls13.go
---- a/src/crypto/tls/handshake_server_tls13.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/handshake_server_tls13.go	2026-09-20 21:11:15.862925810 +0800
 +++ b/src/crypto/tls/handshake_server_tls13.go	2025-03-17 11:59:42.000000000 +0800
 @@ -12,6 +12,7 @@
  	"crypto/rsa"
@@ -7103,7 +7110,7 @@ diff -ruN a/src/crypto/tls/handshake_server_tls13.go b/src/crypto/tls/handshake_
  
  	return nil
 diff -ruN a/src/crypto/tls/handshake_test.go b/src/crypto/tls/handshake_test.go
---- a/src/crypto/tls/handshake_test.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/handshake_test.go	2026-09-20 21:11:15.863232285 +0800
 +++ b/src/crypto/tls/handshake_test.go	2025-03-17 11:59:42.000000000 +0800
 @@ -20,6 +20,7 @@
  	"strconv"
@@ -7183,8 +7190,8 @@ diff -ruN a/src/crypto/tls/hpke.go b/src/crypto/tls/hpke.go
 +}
 diff -ruN a/src/crypto/tls/hqckem.go b/src/crypto/tls/hqckem.go
 --- a/src/crypto/tls/hqckem.go	1970-01-01 08:00:00.000000000 +0800
-+++ b/src/crypto/tls/hqckem.go	2026-09-18 14:13:41.230053584 +0800
-@@ -0,0 +1,207 @@
++++ b/src/crypto/tls/hqckem.go	2026-09-20 21:09:03.168255140 +0800
+@@ -0,0 +1,225 @@
 +//go:build pq_hqc
 +
 +// X25519 + HQC 混合密钥交换（由 liboqs 提供 HQC 实现）。
@@ -7389,13 +7396,31 @@ diff -ruN a/src/crypto/tls/hqckem.go b/src/crypto/tls/hqckem.go
 +	return hybrid.NewHybridScheme("X25519+"+algo, hybrid.X25519KEM(), raw)
 +}
 +
++// newSM2HQCScheme 返回 SM2 + HQC 的混合方案；算法不可用时返回 nil。
++// 与 newHQCScheme 的唯一区别是经典分量改用 SM2（公钥加密型 KEM，C1C3C2），
++// 拼接顺序为 SM2 公钥/密文在前、HQC 公钥/密文在后（与 SM2Kyber* 组一致）。
++func newSM2HQCScheme(algo string) kem.Scheme {
++	cname := C.CString(algo)
++	defer C.free(unsafe.Pointer(cname))
++
++	if C.hqc_is_enabled(cname) == 0 {
++		return nil
++	}
++	k := C.hqc_kem_new(cname)
++	if k == nil {
++		return nil
++	}
++	raw := &hqcScheme{name: algo, kem: k}
++	return hybrid.NewHybridScheme("SM2+"+algo, hybrid.SM2KEM(), raw)
++}
++
 +var _ kem.Scheme = (*hqcScheme)(nil)
 +var _ kem.PublicKey = (*hqcPublicKey)(nil)
 +var _ kem.PrivateKey = (*hqcPrivateKey)(nil)
 diff -ruN a/src/crypto/tls/hqckem_stub.go b/src/crypto/tls/hqckem_stub.go
 --- a/src/crypto/tls/hqckem_stub.go	1970-01-01 08:00:00.000000000 +0800
-+++ b/src/crypto/tls/hqckem_stub.go	2026-09-18 14:12:43.273071115 +0800
-@@ -0,0 +1,17 @@
++++ b/src/crypto/tls/hqckem_stub.go	2026-09-20 21:09:40.242103502 +0800
+@@ -0,0 +1,20 @@
 +//go:build !pq_hqc
 +
 +// 未启用 HQC 时的占位实现：保证默认构建（含 CGO_ENABLED=0 交叉编译）
@@ -7413,8 +7438,11 @@ diff -ruN a/src/crypto/tls/hqckem_stub.go b/src/crypto/tls/hqckem_stub.go
 +// newHQCScheme 在不带 pq_hqc 标签时恒返回 nil，
 +// 上层（curveIdToCirclScheme）会据此把 HQC 组视为不支持。
 +func newHQCScheme(algo string) kem.Scheme { return nil }
++
++// newSM2HQCScheme 同理：默认构建下 SM2+HQC 组视为不支持。
++func newSM2HQCScheme(algo string) kem.Scheme { return nil }
 diff -ruN a/src/crypto/tls/key_agreement.go b/src/crypto/tls/key_agreement.go
---- a/src/crypto/tls/key_agreement.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/key_agreement.go	2026-09-20 21:11:15.863893230 +0800
 +++ b/src/crypto/tls/key_agreement.go	2025-03-17 11:59:42.000000000 +0800
 @@ -130,7 +130,7 @@
  // the sigType (for earlier TLS versions). For Ed25519 signatures, which don't
@@ -7570,7 +7598,7 @@ diff -ruN a/src/crypto/tls/metrics_test.go b/src/crypto/tls/metrics_test.go
 +	}
 +}
 diff -ruN a/src/crypto/tls/prf.go b/src/crypto/tls/prf.go
---- a/src/crypto/tls/prf.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/prf.go	2026-09-20 21:11:15.864288719 +0800
 +++ b/src/crypto/tls/prf.go	2025-03-17 11:59:42.000000000 +0800
 @@ -225,11 +225,11 @@
  // hashForClientCertificate returns the handshake messages so far, pre-hashed if
@@ -7855,7 +7883,7 @@ diff -ruN a/src/crypto/tls/tls_cf_test.go b/src/crypto/tls/tls_cf_test.go
 +	}
 +}
 diff -ruN a/src/crypto/tls/tls.go b/src/crypto/tls/tls.go
---- a/src/crypto/tls/tls.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/tls.go	2026-09-20 21:11:15.864984957 +0800
 +++ b/src/crypto/tls/tls.go	2025-03-17 11:59:42.000000000 +0800
 @@ -4,8 +4,49 @@
  
@@ -7944,7 +7972,7 @@ diff -ruN a/src/crypto/tls/tls.go b/src/crypto/tls/tls.go
  		default:
  			return nil, errors.New("tls: found unknown private key type in PKCS#8 wrapping")
 diff -ruN a/src/crypto/tls/tls_test.go b/src/crypto/tls/tls_test.go
---- a/src/crypto/tls/tls_test.go	2025-02-01 02:38:03.000000000 +0800
+--- a/src/crypto/tls/tls_test.go	2026-09-20 21:11:15.865417958 +0800
 +++ b/src/crypto/tls/tls_test.go	2025-03-17 11:59:42.000000000 +0800
 @@ -830,7 +830,7 @@
  		switch fn := typ.Field(i).Name; fn {
@@ -7983,8 +8011,8 @@ diff -ruN a/src/crypto/tls/tls_test.go b/src/crypto/tls/tls_test.go
  			t.Errorf("all fields must be accounted for, but saw unknown field %q", fn)
  		}
 diff -ruN a/src/vendor/modules.txt b/src/vendor/modules.txt
---- a/src/vendor/modules.txt	2025-02-01 02:38:03.000000000 +0800
-+++ b/src/vendor/modules.txt	2025-03-17 11:59:00.000000000 +0800
+--- a/src/vendor/modules.txt	2026-09-20 21:11:23.680412414 +0800
++++ b/src/vendor/modules.txt	2026-09-20 21:11:23.695660776 +0800
 @@ -1,5 +1,51 @@
 +# github.com/cloudflare/circl v1.4.1-0.20240905130006-2d6cd9871f69
 +## explicit; go 1.21

@@ -70,6 +70,8 @@ var supportedKEX = func() []tls.CurveID {
 		list = append(list,
 			tls.X25519HQC128, // 128 比特量子安全等级（HQC）
 			tls.X25519HQC256, // 256 比特量子安全等级（HQC）
+			tls.SM2HQC128,    // 128 比特量子安全等级（SM2 + HQC）
+			tls.SM2HQC256,    // 256 比特量子安全等级（SM2 + HQC）
 		)
 	}
 	return append(list, tls.X25519) // 传统算法，用于兼容性回退
@@ -90,7 +92,7 @@ func selectKEX() []tls.CurveID {
 		if !ok {
 			log.Fatalf("未知密钥交换组 %q；可选：%s", name, kexHelp)
 		}
-		if (id == tls.X25519HQC128 || id == tls.X25519HQC256) && !tls.HQCEnabled() {
+		if (id == tls.X25519HQC128 || id == tls.X25519HQC256 || id == tls.SM2HQC128 || id == tls.SM2HQC256) && !tls.HQCEnabled() {
 			log.Fatalf("HQC 组需要带 -tags pq_hqc 构建并链接 liboqs；当前构建不含 HQC")
 		}
 		out = append(out, id)
@@ -117,11 +119,16 @@ var kexByName = map[string]tls.CurveID{
 	"X25519HQC-256": tls.X25519HQC256,
 	"X25519HQC1":    tls.X25519HQC128,
 	"X25519HQC5":    tls.X25519HQC256,
+	// SM2 + HQC（同样需 -tags pq_hqc 构建）
+	"SM2HQC-128": tls.SM2HQC128,
+	"SM2HQC-256": tls.SM2HQC256,
+	"SM2HQC1":    tls.SM2HQC128,
+	"SM2HQC5":    tls.SM2HQC256,
 }
 
 const kexHelp = "SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber768Draft00、" +
 	"SM2Kyber768Draft00、X25519Kyber1024Draft00、SM2Kyber1024Draft00、" +
-	"X25519HQC-128、X25519HQC-256、DummyKex、X25519（可用逗号分隔多个，顺序即偏好）"
+	"X25519HQC-128、X25519HQC-256、SM2HQC-128、SM2HQC-256、DummyKex、X25519（可用逗号分隔多个，顺序即偏好）"
 
 // displayBytes 便于日志展示：合法且可打印的 UTF-8 文本直接输出（含中文），
 // 其余（真正的二进制）转十六进制。
@@ -332,6 +339,10 @@ func runClient(wg *sync.WaitGroup) {
 				log.Println("🔑 使用密钥交换算法: X25519HQC-128 (混合后量子, 128 比特量子安全等级)")
 			case tls.X25519HQC256:
 				log.Println("🔑 使用密钥交换算法: X25519HQC-256 (混合后量子, 256 比特量子安全等级)")
+			case tls.SM2HQC128:
+				log.Println("🔑 使用密钥交换算法: SM2HQC-128 (混合后量子, 128 比特量子安全等级)")
+			case tls.SM2HQC256:
+				log.Println("🔑 使用密钥交换算法: SM2HQC-256 (混合后量子, 256 比特量子安全等级)")
 			case tls.X25519:
 				log.Println("🔑 使用密钥交换算法: X25519 (传统)")
 			}

@@ -113,3 +113,36 @@ $ e2e -kex X25519HQC-256 ...
    与既有 `SM2Kyber512Draft00 = 0xfe34` 同一路数。
 4. 安全等级对照：HQC-128 → 128 比特，HQC-256 → 256 比特。申报书「支持 2 类抗量子密码算法，
    可达到 128、256 比特的量子安全等级」中的「2 类」，正好由 **Kyber 与 HQC 两条技术路线**提供。
+
+---
+
+## 补充：国密 SM2 + HQC 混合组（SM2HQC-128 / SM2HQC-256）
+
+在 `X25519HQC-*` 之外，另增两组国密混合组，用于"国产商用密码算法 SM2 与编码类抗量子密码算法 HQC 混合"：
+
+| 组名 | 码点 | 拼接内容（客户端的 key_share） | 服务端的 key_share | 共享秘密 |
+|---|---|---|---|---|
+| `SM2HQC-128` | `0xfe3a`（私用段） | SM2 公钥 65 ‖ HQC-128 公钥 2249 = **2314** | SM2 密文 129 ‖ HQC-128 密文 4433 = **4562** | 32 ‖ 64 = 96 |
+| `SM2HQC-256` | `0xfe3b`（私用段） | SM2 公钥 65 ‖ HQC-256 公钥 7245 = **7310** | SM2 密文 129 ‖ HQC-256 密文 14421 = **14550** | 96 |
+
+改动点（与 `X25519HQC-*` 同一套机制，只换经典分量）：
+
+| 文件 | 改动 |
+|---|---|
+| `vendor/.../circl/kem/hybrid/hybrid.go` | 新增导出 `SM2KEM()`（CIRCL 的 SM2 方案 `sm2Kem` 原先未导出，而 HQC 方案在 `crypto/tls` 侧，需在 tls 侧组合） |
+| `crypto/tls/hqckem.go` | 新增 `newSM2HQCScheme(algo)`：`hybrid.NewHybridScheme("SM2+"+algo, hybrid.SM2KEM(), hqcScheme)` |
+| `crypto/tls/hqckem_stub.go` | 默认构建（`!pq_hqc`）下返回 nil 的占位 |
+| `crypto/tls/cfkem.go` | 新增 `SM2HQC128 = 0xfe3a`、`SM2HQC256 = 0xfe3b` 及 `curveIdToCirclScheme` 分支 |
+| `tls-hybrid/{e2e,server,client}`、`tools/tlsbench` | 组名表新增 `SM2HQC-128/256`（别名 `SM2HQC1/5`）；HQC 版构建时加入 supported_groups |
+| `tools/tls_hello_check.py` | 期望长度表新增 `0xfe3a`、`0xfe3b` |
+
+实测（真实抓包 + 解析脚本断言）：
+
+```
+SM2HQC-128：CH key_share 2314 ✅   SH key_share 4562  ✅
+SM2HQC-256：CH key_share 7310 ✅   SH key_share 14550 ✅
+```
+
+对应测试用例：`TLS-1-12`（SM2HQC-128）、`TLS-1-13`（SM2HQC-256），见
+`docs/测试大纲-输入及操作-细化.md`。补丁已随本次改动重新生成
+（`patches/go1.22.12-crypto-tls.patch`、`patches/vendor-circl.tgz`），并做了"正向应用可 100% 还原当前 GOROOT"的校验。

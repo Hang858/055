@@ -87,6 +87,8 @@ var supportedKEX = func() []tls.CurveID {
 		list = append(list,
 			tls.X25519HQC128, // 128 比特量子安全等级（HQC）
 			tls.X25519HQC256, // 256 比特量子安全等级（HQC）
+			tls.SM2HQC128,    // 128 比特量子安全等级（SM2 + HQC）
+			tls.SM2HQC256,    // 256 比特量子安全等级（SM2 + HQC）
 		)
 	}
 	return append(list, tls.X25519) // 传统算法，用于兼容性回退
@@ -117,11 +119,16 @@ var kexByName = map[string]tls.CurveID{
 	"X25519HQC-256": tls.X25519HQC256,
 	"X25519HQC1":    tls.X25519HQC128,
 	"X25519HQC5":    tls.X25519HQC256,
+	// SM2 + HQC（同样需 -tags pq_hqc 构建）
+	"SM2HQC-128": tls.SM2HQC128,
+	"SM2HQC-256": tls.SM2HQC256,
+	"SM2HQC1":    tls.SM2HQC128,
+	"SM2HQC5":    tls.SM2HQC256,
 }
 
 const kexHelp = "SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber768Draft00、" +
 	"SM2Kyber768Draft00、X25519Kyber1024Draft00、SM2Kyber1024Draft00、" +
-	"X25519HQC-128、X25519HQC-256、DummyKex、X25519（可用逗号分隔多个，顺序即偏好）"
+	"X25519HQC-128、X25519HQC-256、SM2HQC-128、SM2HQC-256、DummyKex、X25519（可用逗号分隔多个，顺序即偏好）"
 
 // selectKEX 依据 -kex 参数选择启用哪些密钥交换组（支持逗号分隔的多组，顺序即偏好）。
 func selectKEX() []tls.CurveID {
@@ -138,7 +145,7 @@ func selectKEX() []tls.CurveID {
 		if !ok {
 			log.Fatalf("未知密钥交换组 %q；可选：%s", name, kexHelp)
 		}
-		if (id == tls.X25519HQC128 || id == tls.X25519HQC256) && !tls.HQCEnabled() {
+		if (id == tls.X25519HQC128 || id == tls.X25519HQC256 || id == tls.SM2HQC128 || id == tls.SM2HQC256) && !tls.HQCEnabled() {
 			log.Fatalf("HQC 组需要带 -tags pq_hqc 构建并链接 liboqs；当前构建不含 HQC")
 		}
 		out = append(out, id)
@@ -215,6 +222,10 @@ func main() {
 					fmt.Println("Used X25519HQC-128 (128 比特量子安全等级)")
 				case tls.X25519HQC256:
 					fmt.Println("Used X25519HQC-256 (256 比特量子安全等级)")
+				case tls.SM2HQC128:
+					fmt.Println("Used SM2HQC-128 (128 比特量子安全等级)")
+				case tls.SM2HQC256:
+					fmt.Println("Used SM2HQC-256 (256 比特量子安全等级)")
 				case tls.X25519:
 					fmt.Println("Used X25519")
 				}

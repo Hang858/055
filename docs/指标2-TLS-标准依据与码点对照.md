@@ -127,5 +127,6 @@ TLS-3-2 用例即用该机制派生应用层密钥并完成加解密。
 | SM2Kyber512Draft00 / SM2Kyber768Draft00 / SM2Kyber1024Draft00 | 已实现并实测（865/897、1633/1697 字节等） | 私用码点 0xfe34 / 0xfe35 / 0xfe37 | 国密与抗量子混合在 IETF 为草案 curveSM2MLKEM768（码点 4590） |
 | X25519Kyber512/768/1024Draft00 | 已实现并实测 | 0x6399 为 Kyber768 草案码点（RFC 10024 已将其列为废弃） | 参数集与 ML-KEM-512/768/1024 相同 |
 | X25519HQC-128 / X25519HQC-256 | 已实现并实测（需 `-tags pq_hqc` 与 liboqs） | 私用码点 0xfe38 / 0xfe39 | HQC 处于 NIST 标准化推进阶段，暂无 IANA 码点 |
+| SM2HQC-128 / SM2HQC-256 | 已实现并实测（需 `-tags pq_hqc` 与 liboqs）：CH 2314 / 7310、SH 4562 / 14550 字节 | 私用码点 0xfe3a / 0xfe3b | 国密 SM2 与编码类抗量子 HQC 混合；HQC 暂无 IANA 码点，SM2+HQC 亦无标准/草案码点 |
 | 纯抗量子组 MLKEM512/768/1024 | 栈内支持 ML-KEM-768 参数集；512/1024 由同为该参数集的 Kyber 实现承载 | IANA 码点 512/513/514 | 可按需补充独立组名 |
 | TLS 抗量子/混合签名与证书 | 协议栈通过 `PQSignatureSchemesEnabled` 支持 Ed25519-Dilithium2/3 混合签名方案；证书体系生成并验证 Dilithium2/3/5（ML-DSA 参数集）、SLH-DSA 12 组与 SM2 双重签名证书链 | draft-ietf-tls-mldsa（ML-DSA 码点 0x0904–0x0906）、RFC 9881 / RFC 9909（X.509 算法标识） | 抗量子公钥与签名经 Certificate、CertificateVerify 承载并验证 |

@@ -258,3 +258,19 @@
 | 2. | 打开 Terminal 终端，输入以下指令，指定密钥交换算法 X25519Kyber1024Draft00，启动 TLS 服务端与客户端：`.build/e2e -cert .build/certs/server_root_cert1.pem -key .build/certs/server_root_key1.pem -ca .build/certs/server_root_cert1.pem -kex X25519Kyber1024Draft00 -addr localhost:8099` | 握手完成：输出 `✅ 客户端和服务器交互完成。` |  |
 | 3. | 按键 ctrl+c 停止抓包，使用 wireshark 查看获取的 "tls-1-11-hybrid.pcap" 数据包：ClientHello/ServerHello 的 key_share 均为 1600 字节，即 X25519 公钥（32 字节）后直接拼接 Kyber1024 公钥/密文（1568 字节），中间没有长度字段。 命令：`python3 tools/tls_hello_check.py tls-1-11-hybrid.pcap --expect X25519Kyber1024Draft00` | CH/SH 的 key_share 均为 1600 字节 = X25519 公钥/密文 32 字节 + Kyber1024 公钥/密文 1568 字节，中间没有长度字段，符合 RFC 9954 §3.2 的直接拼接要求；脚本 `总判定: ✅ 全部通过` |  |
 | 4. | 其余混合组按步骤 1~3 重复，只改 `-kex` 与 `--expect` 的组名（HQC 组需把 `.build/e2e` 换成 `.build/e2e_hqc`，组名写 `X25519HQC-128` / `X25519HQC-256`），各组的 key_share 长度（ClientHello/ServerHello）应依次为：SM2Kyber512Draft00 = 865/897，X25519Kyber512Draft00 = 832/800，X25519Kyber768Draft00 = 1216/1120，X25519Kyber1024Draft00 = 1600/1600，X25519HQC-128 = 2281/4465，X25519HQC-256 = 7277/14453。 | 其余各组长度依次命中 865/897、832/800、1216/1120、1600/1600、2281/4465、7277/14453，且均小于 65535 字节（RFC 9954 §4 的 2^16-1 上限） |  |
+
+### TLS-1-12　SM2HQC-128 混合密钥交换（国密 SM2 + 编码类抗量子 HQC）
+
+| 序号 | 输入及操作 | 预期结果与评估标准 | 实测结果 |
+|---|---|---|---|
+| 1. | 输入以下指令，运行 tcpdump，监听抓包：`sudo tcpdump -i lo -nn -s0 -w tls-1-12-sm2hqc128.pcap port 8099` | tcpdump 已启动并监听 8099 端口 |  |
+| 2. | 打开 Terminal 终端，输入以下指令，指定密钥交换算法 SM2HQC-128（HQC 版程序，需 `-tags pq_hqc` 构建），启动 TLS 服务端与客户端：`.build/e2e_hqc -cert .build/certs/server_root_cert1.pem -key .build/certs/server_root_key1.pem -ca .build/certs/server_root_cert1.pem -kex SM2HQC-128 -addr localhost:8099` | 握手完成：`🔑 使用密钥交换算法: SM2HQC-128 (混合后量子, 128 比特量子安全等级)`、`✅ 客户端和服务器交互完成。` |  |
+| 3. | 按键 ctrl+c 停止抓包，使用 wireshark 查看获取的 "tls-1-12-sm2hqc128.pcap" 数据包：ClientHello key_share 组 0xfe3a、长度 2314 字节（SM2 公钥 65 ‖ HQC-128 公钥 2249），ServerHello 同组、长度 4562 字节（SM2 密文 129 ‖ HQC-128 密文 4433），无长度字段。命令：`python3 tools/tls_hello_check.py tls-1-12-sm2hqc128.pcap --expect SM2HQC-128` | 脚本输出 `CH key_share … 长度=2314，期望 2314`、`SH key_share … 长度=4562，期望 4562`、`总判定: ✅ 全部通过` |  |
+
+### TLS-1-13　SM2HQC-256 混合密钥交换（国密 SM2 + 编码类抗量子 HQC）
+
+| 序号 | 输入及操作 | 预期结果与评估标准 | 实测结果 |
+|---|---|---|---|
+| 1. | 输入以下指令，运行 tcpdump，监听抓包：`sudo tcpdump -i lo -nn -s0 -w tls-1-13-sm2hqc256.pcap port 8099` | tcpdump 已启动并监听 8099 端口 |  |
+| 2. | 打开 Terminal 终端，输入以下指令，指定密钥交换算法 SM2HQC-256，启动 TLS 服务端与客户端：`.build/e2e_hqc -cert .build/certs/server_root_cert1.pem -key .build/certs/server_root_key1.pem -ca .build/certs/server_root_cert1.pem -kex SM2HQC-256 -addr localhost:8099` | 握手完成：`🔑 使用密钥交换算法: SM2HQC-256 (混合后量子, 256 比特量子安全等级)`、`✅ 客户端和服务器交互完成。` |  |
+| 3. | 按键 ctrl+c 停止抓包，使用 wireshark 查看获取的 "tls-1-13-sm2hqc256.pcap" 数据包：ClientHello key_share 组 0xfe3b、长度 7310 字节（SM2 公钥 65 ‖ HQC-256 公钥 7245），ServerHello 同组、长度 14550 字节（SM2 密文 129 ‖ HQC-256 密文 14421）；ClientHello 在线约 7.3KB，会跨多个 TCP 段。命令：`python3 tools/tls_hello_check.py tls-1-13-sm2hqc256.pcap --expect SM2HQC-256` | 脚本输出 `CH key_share … 长度=7310，期望 7310`、`SH key_share … 长度=14550，期望 14550`、`总判定: ✅ 全部通过` |  |
