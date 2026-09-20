@@ -117,3 +117,16 @@ K_CL‖K_PQ -> HKDF-Extract = Handshake Secret          <-- 混合共享秘密�
 
 **导出密钥（exporter_master_secret）**：供上层应用通过 `ExportKeyingMaterial` 派生自己的密钥，本课题
 TLS-3-2 用例即用该机制派生应用层密钥并完成加解密。
+
+## 六、本课题 TLS 侧实现与标准/草案的对照（代码现状核对）
+
+| 能力 | 实现情况 | 标准/码点 | 说明 |
+|---|---|---|---|
+| 混合密钥交换的拼接构造 | ✅ 已实现并抓包验证 | **RFC 9954**（Informational，2026-07） | 公钥/密文直接拼接、不带长度字段；共享秘密拼接后作为 (EC)DHE 输入送入 HKDF 密钥调度 |
+| X25519MLKEM768 | ✅ 后端已接入（0x11ec，CIRCL mlkem768，FIPS 203 版 ML-KEM-768） | **RFC 10024**（Standards Track），码点 4588 | ⚠️ `-kex` 名称表未暴露该名称，命令行暂不可选，需补 CLI 映射 |
+| SM2Kyber512Draft00 / SM2Kyber1024Draft00 | ✅ 已实现并实测（865/897、1633/1697 字节） | 无标准；私用码点 0xfe34 / 0xfe37 | 国密与抗量子混合目前 IETF 仅有草案 curveSM2MLKEM768（4590），且其抗量子分量为 ML-KEM-768 |
+| X25519Kyber512/768/1024Draft00 | ✅ 已实现并实测 | 0x6399 曾为草案码点，**已由 RFC 10024 废弃** | 底层为 CIRCL Kyber（NIST 第三轮草案），与 FIPS 203 ML-KEM **尺寸相同但不字节兼容** |
+| X25519HQC-128 / X25519HQC-256 | ✅ 已实现并实测（需 `-tags pq_hqc` 与 liboqs） | 无标准、无 IANA 码点；私用码点 0xfe38/0xfe39 | HQC 尚未成为 FIPS 标准 |
+| 纯抗量子组 MLKEM512/768/1024 | ❌ 未接入 | IANA 码点 512/513/514 | 可按需补齐 |
+| TLS 握手层的抗量子签名认证 | ⚠️ 未打通 | draft-ietf-tls-mldsa（ML-DSA 码点 0x0904–0x0906）、RFC 9881/9909（X.509） | 补丁仅在 `crypto/tls` 注册了 Ed25519-Dilithium2/3，且需 `tls.Config.PQSignatureSchemesEnabled=true`（项目程序未设置）；`crypto/x509` 未扩展抗量子证书的解析与验签（工具链中的 tls_cf_circl_test.go 引用了未定义的 `x509.PureEdDilithium2`，无法编译）。因此抗量子签名目前只在**证书工具侧**可用 |
+| 证书侧的算法与验签 | ✅ pqcert 已实现（需 Go 1.25+，本机为 Go 1.22 未复跑） | 参数集对应 FIPS 203/204/205 | KEM 用 CIRCL **Kyber-512/768/1024**；签名用 CIRCL **Dilithium mode2/3/5**（代码中标注为 ML-DSA-44/65/87，实为 FIPS 204 之前的实现）与 **SLH-DSA**（经 CIRCL `sign/schemes` 注册名调用）；证书使用实验性私有 OID 与自定义链构造/验签代码，不经过 Go 标准 x509 验证路径 |
