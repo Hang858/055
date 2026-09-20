@@ -61,3 +61,59 @@
 上表长度已通过真实抓包与解析脚本 `tools/tls_hello_check.py` 逐组验证（该脚本内置 RFC 9954 §3.2 的
 预期长度表，可对抓包直接断言）；证书侧已实现并验证 ML-DSA-44/65/87、SLH-DSA-SHA2-128s/192f/256s
 以及「SM2 + ML-DSA-87」等双重签名证书链。
+
+## 五、术语与 TLS 1.3 密钥调度说明（配合正文第 2 点阅读）
+
+**(EC)DHE**：(Elliptic Curve) Diffie-Hellman Ephemeral，即（椭圆曲线）临时 Diffie-Hellman 密钥交换。
+"Ephemeral" 表示双方每次握手都用**一次性临时私钥**，用完即弃，因而具备前向保密（即使长期私钥泄露也
+解不开历史会话）。在 TLS 1.3 的密钥调度图中，`(EC)DHE` 是**一个输入槽位的名字**，承载本次密钥交换
+算出的共享秘密；传统握手里填 ECDH 的共享秘密，混合握手里则填 `K_CL ‖ K_PQ` 的拼接结果
+（RFC 9954 §3.3）。写成"(EC)DHE"是因为 TLS 既支持有限域 DH，也支持椭圆曲线 ECDH。
+
+**HKDF**：HMAC-based Extract-and-Expand Key Derivation Function，基于 HMAC 的"提取—扩展"密钥派生
+函数（RFC 5869）。它分两步：`HKDF-Extract(salt, 输入密钥材料) -> 伪随机密钥 PRK`，
+`HKDF-Expand(PRK, info, 长度) -> 输出密钥`。TLS 1.3 用密码套件指定的哈希（SHA-256 或 SHA-384）实例化
+HKDF，并额外定义了两个封装：
+`HKDF-Expand-Label(Secret, Label, Context, Length)`（把标签与上下文编码后调用 HKDF-Expand）和
+`Derive-Secret(Secret, Label, Messages) = HKDF-Expand-Label(Secret, Label, Transcript-Hash(Messages), Hash.length)`
+（用"到目前为止全部握手报文的哈希"作为上下文，从而把派生出的密钥与本次握手的报文绑定）。
+
+**TLS 1.3 密钥调度**（RFC 9846，混合密钥交换插在 (EC)DHE 位置）：
+
+```
+       0
+       |
+       v
+ PSK -> HKDF-Extract = Early Secret
+       |
+       v  Derive-Secret(., "derived", "")
+       |
+K_CL‖K_PQ -> HKDF-Extract = Handshake Secret          <-- 混合共享秘密在此进入
+       |
+       +--> Derive-Secret(., "c hs traffic", ClientHello…ServerHello) = client_handshake_traffic_secret
+       +--> Derive-Secret(., "s hs traffic", ClientHello…ServerHello) = server_handshake_traffic_secret
+       |
+       v  Derive-Secret(., "derived", "")
+       |
+       0 -> HKDF-Extract = Master Secret
+       |
+       +--> Derive-Secret(., "c ap traffic", …server Finished) = client_application_traffic_secret_0
+       +--> Derive-Secret(., "s ap traffic", …server Finished) = server_application_traffic_secret_0
+       +--> Derive-Secret(., "exp master", …server Finished)   = exporter_master_secret
+       +--> Derive-Secret(., "res master", …client Finished)   = resumption_master_secret
+```
+
+**握手流量密钥（handshake traffic secret）**：由 Handshake Secret 派生，用于保护**握手阶段**的报文——
+服务端的 EncryptedExtensions、Certificate、CertificateVerify、Finished 以及客户端的 Finished。
+由此，证书与签名从 ServerHello 之后就是在加密信道中传输的。
+
+**应用流量密钥（application traffic secret）**：由 Master Secret 派生，用于保护**应用数据**；通信过程中
+可通过 KeyUpdate 更新（下标递增为 `..._traffic_secret_N`）。
+
+两者本身是"密钥材料"，真正的 AEAD 参数再从它们导出：
+`写密钥 = HKDF-Expand-Label(流量密钥, "key", "", 密钥长度)`（AES-128-GCM 为 16 字节、AES-256-GCM 为
+32 字节），`初始向量 IV = HKDF-Expand-Label(流量密钥, "iv", "", 12)`；每条记录再带上 5 字节记录头与
+16 字节认证标签。
+
+**导出密钥（exporter_master_secret）**：供上层应用通过 `ExportKeyingMaterial` 派生自己的密钥，本课题
+TLS-3-2 用例即用该机制派生应用层密钥并完成加解密。
