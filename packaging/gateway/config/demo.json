@@ -1,0 +1,7 @@
+{
+  "listen": "127.0.0.1:8443",
+  "upstream": "http://127.0.0.1:9000",
+  "cert": "../certs-demo/server.crt",
+  "key": "../certs-demo/server.key",
+  "kex": ["SM2Kyber512Draft00", "X25519Kyber768Draft00"]
+}

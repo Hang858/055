@@ -7189,9 +7189,9 @@ diff -ruN a/src/crypto/tls/hpke.go b/src/crypto/tls/hpke.go
 +	return hpke.NewSuite(kem, kdf, aead), nil
 +}
 diff -ruN a/src/crypto/tls/hqckem.go b/src/crypto/tls/hqckem.go
---- a/src/crypto/tls/hqckem.go	1970-01-01 08:00:00.000000000 +0800
-+++ b/src/crypto/tls/hqckem.go	2026-09-20 21:09:03.168255140 +0800
-@@ -0,0 +1,225 @@
+--- a/src/crypto/tls/hqckem.go
++++ b/src/crypto/tls/hqckem.go
+@@ -0,0 +1,245 @@
 +//go:build pq_hqc
 +
 +// X25519 + HQC 混合密钥交换（由 liboqs 提供 HQC 实现）。
@@ -7236,6 +7236,7 @@ diff -ruN a/src/crypto/tls/hqckem.go b/src/crypto/tls/hqckem.go
 +import (
 +	"bytes"
 +	"fmt"
++	"sync"
 +	"unsafe"
 +
 +	"github.com/cloudflare/circl/kem"
@@ -7379,39 +7380,58 @@ diff -ruN a/src/crypto/tls/hqckem.go b/src/crypto/tls/hqckem.go
 +	return sk.pub
 +}
 +
-+// newHQCScheme 返回 X25519 + HQC 的混合方案；算法不可用时返回 nil
-+// （上层 curveIdToCirclScheme 返回 nil 即视为不支持该组）。
-+func newHQCScheme(algo string) kem.Scheme {
-+	cname := C.CString(algo)
-+	defer C.free(unsafe.Pointer(cname))
-+
-+	if C.hqc_is_enabled(cname) == 0 {
-+		return nil
-+	}
-+	k := C.hqc_kem_new(cname)
-+	if k == nil {
-+		return nil
-+	}
-+	raw := &hqcScheme{name: algo, kem: k}
-+	return hybrid.NewHybridScheme("X25519+"+algo, hybrid.X25519KEM(), raw)
++// Each supported hybrid scheme owns one immutable liboqs descriptor for the
++// process lifetime. C descriptors must not be allocated again on each handshake.
++type hqcSchemeCache struct {
++	once   sync.Once
++	scheme kem.Scheme
 +}
 +
-+// newSM2HQCScheme 返回 SM2 + HQC 的混合方案；算法不可用时返回 nil。
-+// 与 newHQCScheme 的唯一区别是经典分量改用 SM2（公钥加密型 KEM，C1C3C2），
-+// 拼接顺序为 SM2 公钥/密文在前、HQC 公钥/密文在后（与 SM2Kyber* 组一致）。
-+func newSM2HQCScheme(algo string) kem.Scheme {
-+	cname := C.CString(algo)
-+	defer C.free(unsafe.Pointer(cname))
++type hqcSchemeKey struct {
++	algo string
++	sm2  bool
++}
 +
-+	if C.hqc_is_enabled(cname) == 0 {
++var hqcSchemes = map[hqcSchemeKey]*hqcSchemeCache{
++	{"HQC-128", false}: {},
++	{"HQC-256", false}: {},
++	{"HQC-128", true}:  {},
++	{"HQC-256", true}:  {},
++}
++
++func cachedHQCScheme(algo string, sm2 bool) kem.Scheme {
++	entry := hqcSchemes[hqcSchemeKey{algo, sm2}]
++	if entry == nil {
 +		return nil
 +	}
-+	k := C.hqc_kem_new(cname)
-+	if k == nil {
-+		return nil
-+	}
-+	raw := &hqcScheme{name: algo, kem: k}
-+	return hybrid.NewHybridScheme("SM2+"+algo, hybrid.SM2KEM(), raw)
++	entry.once.Do(func() {
++		cname := C.CString(algo)
++		defer C.free(unsafe.Pointer(cname))
++		if C.hqc_is_enabled(cname) == 0 {
++			return
++		}
++		k := C.hqc_kem_new(cname)
++		if k == nil {
++			return
++		}
++		raw := &hqcScheme{name: algo, kem: k}
++		if sm2 {
++			entry.scheme = hybrid.NewHybridScheme("SM2+"+algo, hybrid.SM2KEM(), raw)
++		} else {
++			entry.scheme = hybrid.NewHybridScheme("X25519+"+algo, hybrid.X25519KEM(), raw)
++		}
++	})
++	return entry.scheme
++}
++
++// newHQCScheme returns the cached X25519+HQC scheme, or nil if unavailable.
++func newHQCScheme(algo string) kem.Scheme {
++	return cachedHQCScheme(algo, false)
++}
++
++// newSM2HQCScheme returns the cached SM2+HQC scheme, or nil if unavailable.
++func newSM2HQCScheme(algo string) kem.Scheme {
++	return cachedHQCScheme(algo, true)
 +}
 +
 +var _ kem.Scheme = (*hqcScheme)(nil)
@@ -8065,3 +8085,51 @@ diff -ruN a/src/vendor/modules.txt b/src/vendor/modules.txt
  golang.org/x/crypto/chacha20
  golang.org/x/crypto/chacha20poly1305
  golang.org/x/crypto/cryptobyte
+
+diff -ruN a/src/crypto/tls/hqckem_test.go b/src/crypto/tls/hqckem_test.go
+--- a/src/crypto/tls/hqckem_test.go
++++ b/src/crypto/tls/hqckem_test.go
+@@ -0,0 +1,43 @@
++//go:build pq_hqc
++
++package tls
++
++import (
++	"github.com/cloudflare/circl/kem"
++	"sync"
++	"testing"
++)
++
++func TestHQCSharedSchemeLifetime(t *testing.T) {
++	for _, group := range []struct {
++		name   string
++		create func() kem.Scheme
++	}{
++		{"X25519HQC128", func() kem.Scheme { return newHQCScheme("HQC-128") }},
++		{"X25519HQC256", func() kem.Scheme { return newHQCScheme("HQC-256") }},
++		{"SM2HQC128", func() kem.Scheme { return newSM2HQCScheme("HQC-128") }},
++		{"SM2HQC256", func() kem.Scheme { return newSM2HQCScheme("HQC-256") }},
++	} {
++		first := group.create()
++		if first == nil {
++			t.Fatalf("group %s unavailable", group.name)
++		}
++		var wg sync.WaitGroup
++		for i := 0; i < 32; i++ {
++			wg.Add(1)
++			go func() {
++				defer wg.Done()
++				for j := 0; j < 100; j++ {
++					if next := group.create(); next != first {
++						t.Errorf("group %s allocated another scheme", group.name)
++						return
++					}
++				}
++			}()
++		}
++		wg.Wait()
++	}
++	if newHQCScheme("not-an-HQC-algorithm") != nil || newSM2HQCScheme("not-an-HQC-algorithm") != nil {
++		t.Fatal("unsupported HQC algorithm must return nil")
++	}
++}
