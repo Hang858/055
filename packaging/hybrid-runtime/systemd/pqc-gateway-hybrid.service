@@ -1,0 +1,24 @@
+[Unit]
+Description=SM2 and ML-DSA TLS Security Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pqc-gateway
+Group=pqc-gateway
+WorkingDirectory=/opt/pqc-gateway-hybrid
+ExecStartPre=/opt/pqc-gateway-hybrid/bin/pqc-gateway check -config /opt/pqc-gateway-hybrid/config/gateway-44.json
+ExecStart=/opt/pqc-gateway-hybrid/bin/pqc-gateway serve -config /opt/pqc-gateway-hybrid/config/gateway-44.json
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

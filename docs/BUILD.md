@@ -25,6 +25,7 @@ tar xzf go1.22.12.src.tar.gz
 cd go
 patch -p1 < /path/to/patches/go1.22.12-crypto-tls.patch
 patch -p1 < /path/to/patches/go1.22.12-sm2-mldsa-auth.patch
+patch -p1 < /path/to/patches/go1.22.12-sm2-mldsa-mtls.patch
 
 # 3. 放入补丁新增的 CIRCL vendor 树（归档内是 circl/ 目录）
 tar xzf /path/to/patches/vendor-circl.tgz -C src/vendor/github.com/cloudflare

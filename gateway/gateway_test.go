@@ -61,7 +61,7 @@ func TestHybridGatewayProxy(t *testing.T) {
 			}
 			body, _ := io.ReadAll(response.Body)
 			response.Body.Close()
-			if response.StatusCode != 200 || string(body) != "hybrid-gateway-ok" || response.TLS.Version != tls.VersionTLS13 {
+			if response.StatusCode != 200 || string(body) != "hybrid-gateway-ok" || response.TLS.Version != tls.VersionTLS13 || response.TLS.HybridAuthScheme != scheme || len(response.TLS.HybridPeerCertificates) != 1 {
 				t.Fatalf("unexpected response %d %q", response.StatusCode, body)
 			}
 			if err := run([]string{"probe", "-url", gatewayURL, "-ca", cfg.RootCA, "-auth", tc.auth, "-server-name", cfg.ServerName, "-kex", tc.kex}); err != nil {
@@ -74,6 +74,52 @@ func TestHybridGatewayProxy(t *testing.T) {
 			if response, err := (&http.Client{Transport: wrongTransport, Timeout: 5 * time.Second}).Get(gatewayURL); err == nil {
 				response.Body.Close()
 				t.Fatal("accepted wrong server name")
+			}
+		})
+	}
+}
+
+func TestHybridGatewayMutualTLS(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "hybrid-mtls-ok")
+	}))
+	defer backend.Close()
+	for _, tc := range []struct {
+		name string
+		auth string
+		kex  string
+	}{
+		{"44", "sm2-mldsa-44", "SM2Kyber512Draft00"},
+		{"87", "sm2-mldsa-87", "SM2Kyber1024Draft00"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join("hybridcert", "testdata", tc.name)
+			cfg := Config{Listen: "127.0.0.1:0", Upstream: backend.URL, Auth: tc.auth, Cert: filepath.Join(dir, "server.crt"), Key: filepath.Join(dir, "server.key"), PQKey: filepath.Join(dir, "server.pq.key"), RootCA: filepath.Join(dir, "root.crt"), ClientCA: filepath.Join(dir, "root.crt"), ServerName: "gateway.factory.local", KEX: []string{tc.kex}}
+			server, err := newGateway(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalHandler := server.Handler
+			server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.TLS == nil || len(r.TLS.HybridPeerCertificates) != 1 || r.TLS.HybridAuthScheme != server.TLSConfig.HybridAuthScheme {
+					t.Error("missing verified hybrid client identity in TLS connection state")
+				}
+				originalHandler.ServeHTTP(w, r)
+			})
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer server.Close()
+			go server.Serve(tls.NewListener(listener, server.TLSConfig))
+			url := "https://" + listener.Addr().String()
+			base := []string{"probe", "-url", url, "-ca", cfg.RootCA, "-auth", tc.auth, "-server-name", cfg.ServerName, "-kex", tc.kex}
+			if err := run(base); err == nil {
+				t.Fatal("gateway accepted missing hybrid client identity")
+			}
+			args := append(append([]string(nil), base...), "-cert", filepath.Join(dir, "client.crt"), "-key", filepath.Join(dir, "client.key"), "-pq-key", filepath.Join(dir, "client.pq.key"))
+			if err := run(args); err != nil {
+				t.Fatalf("hybrid mTLS probe: %v", err)
 			}
 		})
 	}
@@ -181,7 +227,7 @@ func TestHybridConfigRejectsIncompleteOrMixedAuthentication(t *testing.T) {
 		{"missing root", func(c *Config) { c.RootCA = "" }},
 		{"missing name", func(c *Config) { c.ServerName = "" }},
 		{"unsupported auth", func(c *Config) { c.Auth = "dilithium" }},
-		{"mixed traditional client CA", func(c *Config) { c.ClientCA = "client-ca.crt" }},
+		{"too many intermediates", func(c *Config) { c.Intermediates = []string{"1", "2", "3", "4", "5"} }},
 		{"hybrid fields with traditional auth", func(c *Config) { c.Auth = "ecdsa" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

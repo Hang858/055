@@ -1,0 +1,160 @@
+--- a/src/crypto/tls/common.go
++++ b/src/crypto/tls/common.go
+@@ -328,6 +328,14 @@
+ 	// PeerCertificates and its contents should not be modified.
+ 	PeerCertificates []*x509.Certificate
+ 
++	// HybridPeerCertificates holds the raw, independently verified SM2 + ML-DSA
++	// peer chain in leaf-first order. It is set only after both certificate and
++	// CertificateVerify signatures pass the configured hybrid verifier.
++	HybridPeerCertificates [][]byte
++	// HybridAuthScheme is the private-use TLS signature scheme actually verified
++	// (client side) or sent (server side). Zero means traditional authentication.
++	HybridAuthScheme SignatureScheme
++
+ 	// VerifiedChains is a list of one or more chains where the first element is
+ 	// PeerCertificates[0] and the last element is from Config.RootCAs (on the
+ 	// client side) or Config.ClientCAs (on the server side).
+@@ -874,6 +882,9 @@
+ 	// VerifyHybridServer validates the raw server chain and both signatures on
+ 	// the TLS 1.3 CertificateVerify input. It is required on hybrid clients.
+ 	VerifyHybridServer func(rawCerts [][]byte, serverName string, signed, signature []byte) error
++	// VerifyHybridClient validates a client wire chain and CertificateVerify
++	// signature. It is required when a hybrid server requests client identity.
++	VerifyHybridClient func(rawCerts [][]byte, signed, signature []byte) error
+ 
+ 	// DynamicRecordSizingDisabled disables adaptive sizing of TLS records.
+ 	// When true, the largest possible TLS record size is always used. When
+@@ -1005,6 +1016,7 @@
+ 		PQSignatureSchemesEnabled:   c.PQSignatureSchemesEnabled,
+ 		HybridAuthScheme:            c.HybridAuthScheme,
+ 		VerifyHybridServer:          c.VerifyHybridServer,
++		VerifyHybridClient:          c.VerifyHybridClient,
+ 		DynamicRecordSizingDisabled: c.DynamicRecordSizingDisabled,
+ 		Renegotiation:               c.Renegotiation,
+ 		KeyLogWriter:                c.KeyLogWriter,
+--- a/src/crypto/tls/conn.go
++++ b/src/crypto/tls/conn.go
+@@ -47,13 +47,15 @@
+ 	// handshakes counts the number of handshakes performed on the
+ 	// connection so far. If renegotiation is disabled then this is either
+ 	// zero or one.
+-	handshakes       int
+-	extMasterSecret  bool
+-	didResume        bool // whether this connection was a session resumption
+-	cipherSuite      uint16
+-	ocspResponse     []byte   // stapled OCSP response
+-	scts             [][]byte // signed certificate timestamps from server
+-	peerCertificates []*x509.Certificate
++	handshakes             int
++	extMasterSecret        bool
++	didResume              bool // whether this connection was a session resumption
++	cipherSuite            uint16
++	ocspResponse           []byte   // stapled OCSP response
++	scts                   [][]byte // signed certificate timestamps from server
++	peerCertificates       []*x509.Certificate
++	hybridPeerCertificates [][]byte
++	hybridAuthScheme       SignatureScheme
+ 	// activeCertHandles contains the cache handles to certificates in
+ 	// peerCertificates that are used to track active references.
+ 	activeCertHandles []*activeCert
+@@ -1668,6 +1670,10 @@
+ 	state.ServerName = c.serverName
+ 	state.CipherSuite = c.cipherSuite
+ 	state.PeerCertificates = c.peerCertificates
++	state.HybridAuthScheme = c.hybridAuthScheme
++	for _, der := range c.hybridPeerCertificates {
++		state.HybridPeerCertificates = append(state.HybridPeerCertificates, append([]byte(nil), der...))
++	}
+ 	state.VerifiedChains = c.verifiedChains
+ 	if c.verifiedDC != nil {
+ 		state.VerifiedDC = true
+--- a/src/crypto/tls/handshake_client_tls13.go
++++ b/src/crypto/tls/handshake_client_tls13.go
+@@ -843,6 +843,8 @@
+ 			c.sendAlert(alertBadCertificate)
+ 			return fmt.Errorf("tls: hybrid server authentication failed: %w", err)
+ 		}
++		c.hybridPeerCertificates = certMsg.certificate.Certificate
++		c.hybridAuthScheme = certVerify.signatureAlgorithm
+ 		if err := transcriptMsg(certVerify, hs.transcript); err != nil {
+ 			return err
+ 		}
+--- a/src/crypto/tls/handshake_server_tls13.go
++++ b/src/crypto/tls/handshake_server_tls13.go
+@@ -971,6 +971,9 @@
+ 	if _, err := hs.c.writeHandshakeRecord(certVerifyMsg, hs.transcript); err != nil {
+ 		return err
+ 	}
++	if c.config.HybridAuthScheme != 0 {
++		c.hybridAuthScheme = certVerifyMsg.signatureAlgorithm
++	}
+ 
+ 	hs.hsTimings.WriteCertificateVerify = hs.hsTimings.elapsedTime()
+ 
+@@ -1133,6 +1136,11 @@
+ 
+ func (hs *serverHandshakeStateTLS13) readClientCertificate() error {
+ 	c := hs.c
++	hybridClient := c.config.HybridAuthScheme != 0 && hs.requestClientCert()
++	if hybridClient && (c.config.ClientAuth != RequireAnyClientCert || c.config.VerifyHybridClient == nil) {
++		c.sendAlert(alertHandshakeFailure)
++		return errors.New("tls: hybrid mTLS requires a client verifier and RequireAnyClientCert")
++	}
+ 
+ 	if !hs.requestClientCert() {
+ 		// Make sure the connection is still being verified whether or not
+@@ -1160,11 +1168,18 @@
+ 		return unexpectedMessageError(certMsg, msg)
+ 	}
+ 
+-	if err := c.processCertsFromClient(certMsg.certificate); err != nil {
+-		return err
+-	}
+-
+-	if c.config.VerifyConnection != nil {
++	if hybridClient {
++		if len(certMsg.certificate.Certificate) == 0 {
++			c.sendAlert(alertCertificateRequired)
++			return errors.New("tls: hybrid client did not provide a certificate")
++		}
++	} else {
++		if err := c.processCertsFromClient(certMsg.certificate); err != nil {
++			return err
++		}
++	}
++
++	if !hybridClient && c.config.VerifyConnection != nil {
+ 		if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {
+ 			c.sendAlert(alertBadCertificate)
+ 			return err
+@@ -1193,6 +1208,29 @@
+ 			c.sendAlert(alertIllegalParameter)
+ 			return errors.New("tls: client certificate used with invalid signature algorithm")
+ 		}
++		if hybridClient {
++			if certVerify.signatureAlgorithm != c.config.HybridAuthScheme || certMsg.delegatedCredential {
++				c.sendAlert(alertIllegalParameter)
++				return errors.New("tls: hybrid client used unexpected authentication scheme")
++			}
++			signed := signedMessage(directSigning, clientSignatureContext, hs.transcript)
++			if err := c.config.VerifyHybridClient(certMsg.certificate.Certificate, signed, certVerify.signature); err != nil {
++				c.sendAlert(alertBadCertificate)
++				return fmt.Errorf("tls: hybrid client authentication failed: %w", err)
++			}
++			c.hybridPeerCertificates = certMsg.certificate.Certificate
++			if err := transcriptMsg(certVerify, hs.transcript); err != nil {
++				return err
++			}
++			if c.config.VerifyConnection != nil {
++				if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {
++					c.sendAlert(alertBadCertificate)
++					return err
++				}
++			}
++			hs.hsTimings.ReadCertificateVerify = hs.hsTimings.elapsedTime()
++			return hs.sendSessionTickets()
++		}
+ 		sigType, sigHash, err := typeAndHashFromSignatureScheme(certVerify.signatureAlgorithm)
+ 		if err != nil {
+ 			return c.sendAlert(alertInternalError)

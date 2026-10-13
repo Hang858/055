@@ -88,6 +88,9 @@ func run(args []string) error {
 		auth := fs.String("auth", "ecdsa", "authentication: ecdsa, sm2-mldsa-44 or sm2-mldsa-87")
 		cert := fs.String("cert", "", "optional mTLS client certificate")
 		key := fs.String("key", "", "optional mTLS client key")
+		pqKey := fs.String("pq-key", "", "ML-DSA client private key for hybrid mTLS")
+		clientCA := fs.String("client-ca", "", "trusted root that issued the hybrid client certificate; defaults to -ca")
+		clientIntermediates := fs.String("client-intermediates", "", "comma-separated client CA certificates, root-to-leaf order")
 		data := fs.String("data", "", "POST body (default GET)")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
@@ -122,15 +125,35 @@ func run(args []string) error {
 			}
 			tc.SessionTicketsDisabled = true
 		}
-		if *cert != "" || *key != "" {
-			if *auth != "ecdsa" {
-				return fmt.Errorf("hybrid mTLS is not available in this phase")
+		if *cert != "" || *key != "" || *pqKey != "" {
+			if *cert == "" || *key == "" {
+				return fmt.Errorf("mTLS requires both -cert and -key")
 			}
-			c, err := tls.LoadX509KeyPair(*cert, *key)
+			var identity tls.Certificate
+			if *auth == "ecdsa" {
+				if *pqKey != "" || *clientCA != "" || *clientIntermediates != "" {
+					return fmt.Errorf("hybrid client options require hybrid authentication")
+				}
+				identity, err = tls.LoadX509KeyPair(*cert, *key)
+			} else {
+				if *pqKey == "" {
+					return fmt.Errorf("hybrid mTLS requires -pq-key")
+				}
+				root := *clientCA
+				if root == "" {
+					root = *ca
+				}
+				var intermediates []string
+				if *clientIntermediates != "" {
+					intermediates = strings.Split(*clientIntermediates, ",")
+				}
+				level, _ := authLevel(*auth)
+				identity, err = hybridcert.ClientCertificate(root, intermediates, *cert, *key, *pqKey, level)
+			}
 			if err != nil {
 				return err
 			}
-			tc.Certificates = []tls.Certificate{c}
+			tc.Certificates = []tls.Certificate{identity}
 		}
 		transport := &http.Transport{TLSClientConfig: tc}
 		defer transport.CloseIdleConnections()
@@ -158,7 +181,13 @@ func run(args []string) error {
 		if !negotiated || resp.TLS == nil || resp.TLS.Version != tls.VersionTLS13 {
 			return fmt.Errorf("PQ TLS 1.3 negotiation was not observed")
 		}
-		fmt.Fprintln(os.Stderr, "http_status=", resp.StatusCode, "certificate_verified=true", "authenticated_signature="+*auth)
+		if *auth != "ecdsa" {
+			if resp.TLS.HybridAuthScheme != tc.HybridAuthScheme || len(resp.TLS.HybridPeerCertificates) == 0 {
+				return fmt.Errorf("hybrid signature scheme or peer certificate was not verified")
+			}
+			fmt.Fprintf(os.Stderr, "authenticated_signature=%s codepoint=0x%04x\n", *auth, uint16(resp.TLS.HybridAuthScheme))
+		}
+		fmt.Fprintln(os.Stderr, "http_status=", resp.StatusCode, "certificate_verified=true")
 		if _, err = io.Copy(os.Stdout, io.LimitReader(resp.Body, 1<<20)); err != nil {
 			return err
 		}

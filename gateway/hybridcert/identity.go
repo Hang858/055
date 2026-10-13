@@ -367,3 +367,31 @@ func VerifyDERChain(rootDER []byte, wireChain [][]byte, level hybridsig.Level, p
 	}
 	return &Identity{SM2Public: &sm2.PublicKey{Curve: sm2Public.Curve, X: sm2Public.X, Y: sm2Public.Y}, PQPublic: leafPQ, LeafDER: wireChain[0]}, nil
 }
+
+// ValidateTrustRoot checks that the configured trust anchor is a live,
+// self-signed hybrid CA at the selected ML-DSA level.
+func ValidateTrustRoot(rootDER []byte, level hybridsig.Level, now time.Time) error {
+	if len(rootDER) == 0 || len(rootDER) > 1024*1024 {
+		return errors.New("invalid trusted root certificate size")
+	}
+	scheme, oid, err := schemeFor(level)
+	if err != nil {
+		return err
+	}
+	raw, root, err := parseCertificate(rootDER)
+	if err != nil {
+		return err
+	}
+	if now.Before(root.NotBefore) || !now.Before(root.NotAfter) || root.SignatureAlgorithm != gx.SM2WithSM3 ||
+		!root.IsCA || !root.BasicConstraintsValid || root.KeyUsage&gx.KeyUsageCertSign == 0 {
+		return errors.New("invalid trusted hybrid CA")
+	}
+	if err := root.CheckSignatureFrom(root); err != nil {
+		return fmt.Errorf("trusted root SM2 signature: %w", err)
+	}
+	public, err := pqPublic(raw, scheme, oid)
+	if err != nil {
+		return err
+	}
+	return verifyPQSignature(raw, public, scheme, oid)
+}

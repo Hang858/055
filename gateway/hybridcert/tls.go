@@ -43,7 +43,16 @@ func (s *TLSSigner) Sign(_ io.Reader, message []byte, opts crypto.SignerOpts) ([
 
 // ServerCertificate loads the local server identity and returns its TLS wire chain.
 func ServerCertificate(rootPath string, intermediatePaths []string, leafPath, sm2KeyPath, pqKeyPath string, level hybridsig.Level, serverName string) (tls.Certificate, error) {
-	id, err := LoadChain(rootPath, intermediatePaths, leafPath, sm2KeyPath, pqKeyPath, level, Server, serverName, time.Now())
+	return tlsCertificate(rootPath, intermediatePaths, leafPath, sm2KeyPath, pqKeyPath, level, Server, serverName)
+}
+
+// ClientCertificate loads the local client identity for mutual TLS.
+func ClientCertificate(rootPath string, intermediatePaths []string, leafPath, sm2KeyPath, pqKeyPath string, level hybridsig.Level) (tls.Certificate, error) {
+	return tlsCertificate(rootPath, intermediatePaths, leafPath, sm2KeyPath, pqKeyPath, level, Client, "")
+}
+
+func tlsCertificate(rootPath string, intermediatePaths []string, leafPath, sm2KeyPath, pqKeyPath string, level hybridsig.Level, purpose Purpose, serverName string) (tls.Certificate, error) {
+	id, err := LoadChain(rootPath, intermediatePaths, leafPath, sm2KeyPath, pqKeyPath, level, purpose, serverName, time.Now())
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -58,6 +67,27 @@ func ServerCertificate(rootPath string, intermediatePaths []string, leafPath, sm
 	return tls.Certificate{Certificate: chain, PrivateKey: &TLSSigner{Identity: id, Level: level}}, nil
 }
 
+// NewClientVerifier pins the trusted client CA for mutual TLS.
+func NewClientVerifier(rootPath string, level hybridsig.Level) (func([][]byte, []byte, []byte) error, error) {
+	if _, err := Scheme(level); err != nil {
+		return nil, err
+	}
+	rootDER, err := readPEM(rootPath, "CERTIFICATE")
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateTrustRoot(rootDER, level, time.Now()); err != nil {
+		return nil, err
+	}
+	return func(chain [][]byte, signed, signature []byte) error {
+		id, err := VerifyDERChain(rootDER, chain, level, Client, "", time.Now())
+		if err != nil {
+			return err
+		}
+		return hybridsig.Verify(level, id.SM2Public, id.PQPublic, signed, signature)
+	}, nil
+}
+
 // NewServerVerifier pins the trusted root and verifies each peer's certificate
 // chain and CertificateVerify signature with both SM2 and ML-DSA.
 func NewServerVerifier(rootPath string, level hybridsig.Level) (func([][]byte, string, []byte, []byte) error, error) {
@@ -66,6 +96,9 @@ func NewServerVerifier(rootPath string, level hybridsig.Level) (func([][]byte, s
 	}
 	rootDER, err := readPEM(rootPath, "CERTIFICATE")
 	if err != nil {
+		return nil, err
+	}
+	if err := ValidateTrustRoot(rootDER, level, time.Now()); err != nil {
 		return nil, err
 	}
 	return func(chain [][]byte, serverName string, signed, signature []byte) error {

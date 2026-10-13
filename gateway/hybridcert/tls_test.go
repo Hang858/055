@@ -130,3 +130,74 @@ func TestHybridTLS13ServerAuthentication(t *testing.T) {
 		})
 	}
 }
+
+func TestHybridTLS13MutualAuthentication(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		level hybridsig.Level
+	}{
+		{"44", hybridsig.Level128}, {"87", hybridsig.Level256},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join("testdata", tc.name)
+			root := filepath.Join(dir, "root.crt")
+			serverCert, err := ServerCertificate(root, nil, filepath.Join(dir, "server.crt"), filepath.Join(dir, "server.key"), filepath.Join(dir, "server.pq.key"), tc.level, "gateway.factory.local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			clientCert, err := ClientCertificate(root, nil, filepath.Join(dir, "client.crt"), filepath.Join(dir, "client.key"), filepath.Join(dir, "client.pq.key"), tc.level)
+			if err != nil {
+				t.Fatal(err)
+			}
+			serverVerifier, err := NewServerVerifier(root, tc.level)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clientVerifier, err := NewClientVerifier(root, tc.level)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scheme, _ := Scheme(tc.level)
+			serverConfig := &tls.Config{Certificates: []tls.Certificate{serverCert}, HybridAuthScheme: scheme, VerifyHybridClient: clientVerifier, ClientAuth: tls.RequireAnyClientCert, SessionTicketsDisabled: true, MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13}
+			clientConfig := &tls.Config{Certificates: []tls.Certificate{clientCert}, ServerName: "gateway.factory.local", HybridAuthScheme: scheme, VerifyHybridServer: serverVerifier, SessionTicketsDisabled: true, MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13}
+			serverErr, clientErr := runHybridHandshake(t, serverConfig, clientConfig)
+			if serverErr != nil || clientErr != nil {
+				t.Fatalf("mTLS server=%v client=%v", serverErr, clientErr)
+			}
+			missing := clientConfig.Clone()
+			missing.Certificates = nil
+			serverErr, _ = runHybridHandshake(t, serverConfig, missing)
+			if serverErr == nil || !strings.Contains(serverErr.Error(), "did not provide") {
+				t.Fatalf("missing client certificate accepted: %v", serverErr)
+			}
+			wrongRole := clientConfig.Clone()
+			wrongRole.Certificates = []tls.Certificate{serverCert}
+			serverErr, _ = runHybridHandshake(t, serverConfig, wrongRole)
+			if serverErr == nil || !strings.Contains(serverErr.Error(), "client authentication failed") {
+				t.Fatalf("server-purpose client certificate accepted: %v", serverErr)
+			}
+			for _, part := range []string{"pq", "sm2", "missing-pq", "missing-sm2"} {
+				t.Run("tampered-client-"+part, func(t *testing.T) {
+					bad := clientConfig.Clone()
+					badCert := clientCert
+					badCert.PrivateKey = &damagedSigner{clientCert.PrivateKey.(*TLSSigner), part}
+					bad.Certificates = []tls.Certificate{badCert}
+					serverErr, _ := runHybridHandshake(t, serverConfig, bad)
+					if serverErr == nil || !strings.Contains(serverErr.Error(), "client authentication failed") {
+						t.Fatalf("tampered client %s accepted: %v", part, serverErr)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestVerifierRejectsWrongTrustRootLevel(t *testing.T) {
+	root := filepath.Join("testdata", "44", "root.crt")
+	if _, err := NewServerVerifier(root, hybridsig.Level256); err == nil {
+		t.Fatal("server verifier accepted an ML-DSA-44 root for level 256")
+	}
+	if _, err := NewClientVerifier(root, hybridsig.Level256); err == nil {
+		t.Fatal("client verifier accepted an ML-DSA-44 root for level 256")
+	}
+}

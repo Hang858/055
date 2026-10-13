@@ -98,9 +98,6 @@ func (c Config) validate() error {
 		if c.PQKey == "" || c.RootCA == "" || c.ServerName == "" {
 			return fmt.Errorf("hybrid auth requires pq_key, root_ca and server_name")
 		}
-		if c.ClientCA != "" {
-			return fmt.Errorf("hybrid client authentication is not available in this phase")
-		}
 		if len(c.Intermediates) > 4 {
 			return fmt.Errorf("at most four intermediate CAs are supported")
 		}

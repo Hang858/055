@@ -61,11 +61,20 @@ func newGateway(c Config) (*http.Server, error) {
 		tc.SessionTicketsDisabled = true
 	}
 	if c.ClientCA != "" {
-		tc.ClientCAs, err = loadCA(c.ClientCA)
-		if err != nil {
-			return nil, err
+		if c.Auth != "" && c.Auth != "ecdsa" {
+			level, _ := authLevel(c.Auth)
+			tc.VerifyHybridClient, err = hybridcert.NewClientVerifier(c.ClientCA, level)
+			if err != nil {
+				return nil, err
+			}
+			tc.ClientAuth = tls.RequireAnyClientCert
+		} else {
+			tc.ClientCAs, err = loadCA(c.ClientCA)
+			if err != nil {
+				return nil, err
+			}
+			tc.ClientAuth = tls.RequireAndVerifyClientCert
 		}
-		tc.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 	upstreamTLS := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: c.UpstreamServerName}
 	if c.UpstreamCA != "" {
@@ -91,5 +100,11 @@ func newGateway(c Config) (*http.Server, error) {
 			http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		},
 	}
-	return &http.Server{Addr: c.Listen, Handler: proxy, TLSConfig: tc, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 1 << 20}, nil
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS != nil && r.TLS.HybridAuthScheme != 0 {
+			log.Printf("TLS auth_scheme=0x%04x client_cert_verified=%t", uint16(r.TLS.HybridAuthScheme), len(r.TLS.HybridPeerCertificates) > 0)
+		}
+		proxy.ServeHTTP(w, r)
+	})
+	return &http.Server{Addr: c.Listen, Handler: handler, TLSConfig: tc, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 1 << 20}, nil
 }
