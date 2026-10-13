@@ -1,6 +1,7 @@
 package hybridsig
 
 import (
+	"bytes"
 	"crypto/rand"
 	"testing"
 
@@ -41,8 +42,8 @@ func TestHybridSignatureRequiresBothComponents(t *testing.T) {
 			modifiedSM2 := append([]byte(nil), sig...)
 			modifiedSM2[8] ^= 1
 			for name, candidate := range map[string][]byte{
-				"missing PQ signature":  sig[:len(sig)-tc.scheme.SignatureSize()],
-				"modified PQ signature": modified,
+				"missing PQ signature":   sig[:len(sig)-tc.scheme.SignatureSize()],
+				"modified PQ signature":  modified,
 				"modified SM2 signature": modifiedSM2,
 			} {
 				if err := Verify(tc.level, &classical.PublicKey, pqPublic, message, candidate); err == nil {
@@ -68,4 +69,75 @@ func TestHybridSignatureRejectsWrongParameterSet(t *testing.T) {
 	if _, err := Sign(Level256, classical, pqPrivate, []byte("message")); err == nil {
 		t.Fatal("accepted ML-DSA-44 key for 256-bit profile")
 	}
+}
+
+func TestHybridSignatureRejectsWrongPublicKeysAndEncoding(t *testing.T) {
+	classical, err := sm2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherClassical, err := sm2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pqPublic, pqPrivate, err := mldsa44.Scheme().GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPQ, _, err := mldsa44.Scheme().GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := []byte("CertificateVerify input")
+	signature, err := Sign(Level128, classical, pqPrivate, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name      string
+		classical *sm2.PublicKey
+		pq        sign.PublicKey
+		signature []byte
+	}{
+		{"wrong SM2 public key", &otherClassical.PublicKey, pqPublic, signature},
+		{"wrong ML-DSA public key", &classical.PublicKey, otherPQ, signature},
+		{"one byte before DER", &classical.PublicKey, pqPublic, append([]byte{0}, signature...)},
+		{"truncated PQ tail", &classical.PublicKey, pqPublic, signature[:len(signature)-1]},
+		{"extra trailing byte", &classical.PublicKey, pqPublic, append(bytes.Clone(signature), 0)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := Verify(Level128, tc.classical, tc.pq, message, tc.signature); err == nil {
+				t.Fatal("accepted a signature with the wrong public key or encoding")
+			}
+		})
+	}
+}
+
+func FuzzHybridSignatureRejectsMalformedInput(f *testing.F) {
+	classical, err := sm2.GenerateKey(rand.Reader)
+	if err != nil {
+		f.Fatal(err)
+	}
+	pqPublic, pqPrivate, err := mldsa44.Scheme().GenerateKey()
+	if err != nil {
+		f.Fatal(err)
+	}
+	message := []byte("CertificateVerify input")
+	valid, err := Sign(Level128, classical, pqPrivate, message)
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(valid)
+	f.Add([]byte{})
+	f.Add([]byte{0x30, 0x00})
+	f.Fuzz(func(t *testing.T, candidate []byte) {
+		err := Verify(Level128, &classical.PublicKey, pqPublic, message, candidate)
+		if bytes.Equal(candidate, valid) {
+			if err != nil {
+				t.Fatalf("valid signature rejected: %v", err)
+			}
+		} else if err == nil {
+			t.Fatal("malformed signature accepted")
+		}
+	})
 }

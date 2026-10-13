@@ -1,6 +1,6 @@
-# TLS 安全网关：SM2 + ML-DSA 服务端认证
+# TLS 安全网关：SM2 + ML-DSA 双向认证
 
-本阶段支持 TLS 1.3 服务端双签身份认证。`sm2-mldsa-44`使用 SM2 与标准 ML-DSA-44；`sm2-mldsa-87`使用 SM2 与标准 ML-DSA-87。客户端在`signature_algorithms`中声明项目私有码点`0xfea0`或`0xfea1`。网关发送同一份 TLS `CertificateVerify` 输入上的两份签名；客户端逐级验证证书链的 SM2 和 ML-DSA 签名，并同时验证握手双签。任一验证失败即终止连接。
+网关支持 TLS 1.3 服务端双签身份认证和双向认证。`sm2-mldsa-44`使用 SM2 与标准 ML-DSA-44；`sm2-mldsa-87`使用 SM2 与标准 ML-DSA-87。客户端在`signature_algorithms`中声明项目私有码点`0xfea0`或`0xfea1`。网关发送同一份 TLS `CertificateVerify` 输入上的两份签名；客户端逐级验证证书链的 SM2 和 ML-DSA 签名，并同时验证握手双签。启用`client_ca`后，网关对客户端执行同样的双签验证。任一验证失败即终止连接。
 
 ## 准备证书
 
@@ -12,7 +12,7 @@ pqc-certtool generate -config tls-certs.json
 pqc-certtool verify -config tls-certs.json
 ```
 
-把`server.crt`、`server.key`、`server.pq.key`和`root.crt`放到网关指定目录。客户端只需要`root.crt`。如果使用中间 CA，网关配置中的`intermediates`须按根到叶顺序填写中间证书；网关发给客户端时会改为 TLS 要求的叶到根顺序。私钥只放在网关，不要复制到客户端。
+把`server.crt`、`server.key`、`server.pq.key`和`root.crt`放到网关指定目录。只验证服务端时，客户端只需要`root.crt`；启用双向认证后，客户端还需要自己的`client.crt`、`client.key`和`client.pq.key`。如果使用中间 CA，网关配置中的`intermediates`须按根到叶顺序填写中间证书；网关发给客户端时会改为 TLS 要求的叶到根顺序。服务端私钥只放在网关，客户端私钥只放在客户端。
 
 ## 配置和运行
 
