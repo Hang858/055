@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"github.com/tjfoc/gmsm/sm2"
 	gx "github.com/tjfoc/gmsm/x509"
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 )
 
@@ -254,6 +256,27 @@ func checkCertificate(mode string, n NodeConfig, ca bool, pathLen int, c *Certif
 		}
 		if !bytes.Equal(expected, public) {
 			return fmt.Errorf("证书公钥与导入文件不一致")
+		}
+	}
+	if n.TLSUsage != "" {
+		parsed, err := gx.ParseCertificate(der)
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(parsed.DNSNames, n.DNSNames) || len(parsed.IPAddresses) != len(n.IPAddresses) {
+			return fmt.Errorf("TLS SAN与配置不一致")
+		}
+		for i, text := range n.IPAddresses {
+			if !parsed.IPAddresses[i].Equal(net.ParseIP(text)) {
+				return fmt.Errorf("TLS IP SAN与配置不一致")
+			}
+		}
+		usage := gx.ExtKeyUsageServerAuth
+		if n.TLSUsage == "client" {
+			usage = gx.ExtKeyUsageClientAuth
+		}
+		if len(parsed.ExtKeyUsage) != 1 || parsed.ExtKeyUsage[0] != usage {
+			return fmt.Errorf("TLS证书用途与配置不一致")
 		}
 	}
 	return nil

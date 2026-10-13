@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "mode": "sm2-hybrid",
+  "output_dir": "../output/tls-sm2-mldsa87",
+  "root": {
+    "name": "root",
+    "common_name": "Factory TLS Hybrid Root 256",
+    "algorithm": "ML-DSA-87",
+    "valid_days": 3650
+  },
+  "intermediates": [],
+  "leaves": [
+    {
+      "name": "server",
+      "common_name": "gateway.factory.local",
+      "algorithm": "ML-DSA-87",
+      "valid_days": 365,
+      "dns_names": ["gateway.factory.local"],
+      "ip_addresses": ["127.0.0.1"],
+      "tls_usage": "server"
+    },
+    {
+      "name": "client",
+      "common_name": "factory-test-client",
+      "algorithm": "ML-DSA-87",
+      "valid_days": 365,
+      "tls_usage": "client"
+    }
+  ]
+}

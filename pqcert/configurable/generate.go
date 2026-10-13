@@ -12,6 +12,7 @@ import (
 	"github.com/tjfoc/gmsm/sm2"
 	gx "github.com/tjfoc/gmsm/x509"
 	"golang.org/x/sys/unix"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -191,6 +192,17 @@ func createNode(mode string, n NodeConfig, parent *generatedNode, ca bool, pathL
 			usage = gx.KeyUsageCertSign | gx.KeyUsageCRLSign
 		}
 		tpl := &gx.Certificate{Version: 3, SerialNumber: sn, Subject: pkix.Name{CommonName: n.CommonName}, NotBefore: start, NotAfter: end, IsCA: ca, BasicConstraintsValid: true, MaxPathLen: pathLen, MaxPathLenZero: ca && pathLen == 0, KeyUsage: usage, SignatureAlgorithm: gx.SM2WithSM3, ExtraExtensions: exts}
+		if n.TLSUsage != "" {
+			tpl.DNSNames = append([]string(nil), n.DNSNames...)
+			for _, text := range n.IPAddresses {
+				tpl.IPAddresses = append(tpl.IPAddresses, net.ParseIP(text))
+			}
+			if n.TLSUsage == "server" {
+				tpl.ExtKeyUsage = []gx.ExtKeyUsage{gx.ExtKeyUsageServerAuth}
+			} else {
+				tpl.ExtKeyUsage = []gx.ExtKeyUsage{gx.ExtKeyUsageClientAuth}
+			}
+		}
 		issuer := parent.gm
 		if parent == g {
 			issuer = tpl

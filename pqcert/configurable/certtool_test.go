@@ -15,6 +15,7 @@ import (
 	"github.com/tjfoc/gmsm/sm2"
 	gx "github.com/tjfoc/gmsm/x509"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,64 @@ import (
 	"testing"
 	"time"
 )
+
+func TestSM2HybridTLSIdentityFields(t *testing.T) {
+	for _, algorithmName := range []string{"ML-DSA-44", "ML-DSA-87"} {
+		t.Run(algorithmName, func(t *testing.T) {
+			c := Config{SchemaVersion: 1, Mode: "sm2-hybrid", OutputDir: filepath.Join(t.TempDir(), "output"),
+				Root: NodeConfig{Name: "root", CommonName: "Test Root", Algorithm: algorithmName, ValidDays: 3650},
+				Leaves: []NodeConfig{{Name: "server", CommonName: "gateway.factory.local", Algorithm: algorithmName, ValidDays: 365,
+					DNSNames: []string{"gateway.factory.local"}, IPAddresses: []string{"127.0.0.1"}, TLSUsage: "server"}}}
+			if err := validateConfig(c); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := generate(c); err != nil {
+				t.Fatal(err)
+			}
+			cert, der, err := readCertificate(filepath.Join(c.OutputDir, "server.crt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = cert
+			parsed, err := gx.ParseCertificate(der)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(parsed.DNSNames) != 1 || parsed.DNSNames[0] != "gateway.factory.local" || len(parsed.IPAddresses) != 1 || !parsed.IPAddresses[0].Equal(net.ParseIP("127.0.0.1")) {
+				t.Fatalf("TLS SAN missing: DNS=%v IP=%v", parsed.DNSNames, parsed.IPAddresses)
+			}
+			if len(parsed.ExtKeyUsage) != 1 || parsed.ExtKeyUsage[0] != gx.ExtKeyUsageServerAuth {
+				t.Fatalf("TLS server EKU missing: %v", parsed.ExtKeyUsage)
+			}
+			c.Leaves[0].DNSNames[0] = "other.factory.local"
+			if _, err := verify(c, c.OutputDir); err == nil {
+				t.Fatal("accepted certificate with SAN different from configuration")
+			}
+		})
+	}
+}
+
+func TestSM2HybridTLSIdentityFieldsRejectInvalidConfig(t *testing.T) {
+	base := Config{SchemaVersion: 1, Mode: "sm2-hybrid", OutputDir: filepath.Join(t.TempDir(), "output"),
+		Root:   NodeConfig{Name: "root", CommonName: "Root", Algorithm: "ML-DSA-44", ValidDays: 3650},
+		Leaves: []NodeConfig{{Name: "server", CommonName: "Server", Algorithm: "ML-DSA-44", ValidDays: 365, TLSUsage: "server", DNSNames: []string{"gateway.factory.local"}}}}
+	for name, change := range map[string]func(*Config){
+		"server without SAN": func(c *Config) { c.Leaves[0].DNSNames = nil },
+		"invalid IP":         func(c *Config) { c.Leaves[0].IPAddresses = []string{"not-an-ip"} },
+		"invalid DNS":        func(c *Config) { c.Leaves[0].DNSNames = []string{"-bad.example"} },
+		"CA with TLS usage":  func(c *Config) { c.Root.TLSUsage = "server" },
+		"wrong mode":         func(c *Config) { c.Mode = "pure-pq" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := base
+			c.Leaves = append([]NodeConfig(nil), base.Leaves...)
+			change(&c)
+			if err := validateConfig(c); err == nil {
+				t.Fatal("accepted invalid TLS identity configuration")
+			}
+		})
+	}
+}
 
 func TestUnmarkedPQPublicKeyImportRejected(t *testing.T) {
 	a, _ := algorithm("Dilithium2")

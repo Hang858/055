@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,11 +13,14 @@ import (
 )
 
 type NodeConfig struct {
-	Name          string `json:"name"`
-	CommonName    string `json:"common_name"`
-	Algorithm     string `json:"algorithm"`
-	ValidDays     int    `json:"valid_days"`
-	PublicKeyFile string `json:"public_key_file,omitempty"`
+	Name          string   `json:"name"`
+	CommonName    string   `json:"common_name"`
+	Algorithm     string   `json:"algorithm"`
+	ValidDays     int      `json:"valid_days"`
+	PublicKeyFile string   `json:"public_key_file,omitempty"`
+	DNSNames      []string `json:"dns_names,omitempty"`
+	IPAddresses   []string `json:"ip_addresses,omitempty"`
+	TLSUsage      string   `json:"tls_usage,omitempty"`
 }
 type Config struct {
 	SchemaVersion int          `json:"schema_version"`
@@ -142,6 +146,30 @@ func validateConfig(c Config) error {
 			return fmt.Errorf("valid_days范围为1至36500: %s", n.Name)
 		}
 		isCA := i <= len(c.Intermediates)
+		if n.TLSUsage != "" || len(n.DNSNames) != 0 || len(n.IPAddresses) != 0 {
+			if isCA || c.Mode != "sm2-hybrid" {
+				return fmt.Errorf("TLS身份字段仅适用于SM2混合模式的用户证书: %s", n.Name)
+			}
+			if n.TLSUsage != "server" && n.TLSUsage != "client" {
+				return fmt.Errorf("tls_usage必须为server或client: %s", n.Name)
+			}
+			if n.TLSUsage == "server" && len(n.DNSNames)+len(n.IPAddresses) == 0 {
+				return fmt.Errorf("TLS服务端证书必须配置DNS或IP SAN: %s", n.Name)
+			}
+			if len(n.DNSNames)+len(n.IPAddresses) > 32 {
+				return fmt.Errorf("TLS SAN超过32项: %s", n.Name)
+			}
+			for _, name := range n.DNSNames {
+				if !validDNSName(name) {
+					return fmt.Errorf("无效TLS DNS名称: %s", name)
+				}
+			}
+			for _, ip := range n.IPAddresses {
+				if net.ParseIP(ip) == nil {
+					return fmt.Errorf("无效TLS IP地址: %s", ip)
+				}
+			}
+		}
 		if i > 0 && n.ValidDays > parentDays {
 			return fmt.Errorf("证书有效期不能超过签发者: %s", n.Name)
 		}
@@ -171,4 +199,23 @@ func validateConfig(c Config) error {
 		}
 	}
 	return nil
+}
+
+func validDNSName(name string) bool {
+	if len(name) < 1 || len(name) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if len(label) < 1 || len(label) > 63 {
+			return false
+		}
+		for i, c := range label {
+			letter := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+			digit := c >= '0' && c <= '9'
+			if !letter && !digit && !(c == '-' && i > 0 && i < len(label)-1) {
+				return false
+			}
+		}
+	}
+	return true
 }
