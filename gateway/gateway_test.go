@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,7 +12,72 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"pqc-gateway/hybridcert"
+	"pqc-gateway/hybridsig"
 )
+
+func TestHybridGatewayProxy(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "hybrid-gateway-ok")
+	}))
+	defer backend.Close()
+	for _, tc := range []struct {
+		name  string
+		auth  string
+		level hybridsig.Level
+		kex   string
+	}{
+		{"44", "sm2-mldsa-44", hybridsig.Level128, "SM2Kyber512Draft00"},
+		{"87", "sm2-mldsa-87", hybridsig.Level256, "SM2Kyber1024Draft00"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join("hybridcert", "testdata", tc.name)
+			cfg := Config{Listen: "127.0.0.1:0", Upstream: backend.URL, Auth: tc.auth, Cert: filepath.Join(dir, "server.crt"), Key: filepath.Join(dir, "server.key"), PQKey: filepath.Join(dir, "server.pq.key"), RootCA: filepath.Join(dir, "root.crt"), ServerName: "gateway.factory.local", KEX: []string{tc.kex}}
+			server, err := newGateway(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer server.Close()
+			go server.Serve(tls.NewListener(listener, server.TLSConfig))
+			gatewayURL := "https://" + listener.Addr().String()
+			verifier, err := hybridcert.NewServerVerifier(cfg.RootCA, tc.level)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scheme, _ := hybridcert.Scheme(tc.level)
+			curves, _ := selectGroups(cfg.KEX)
+			clientConfig := &tls.Config{ServerName: cfg.ServerName, HybridAuthScheme: scheme, VerifyHybridServer: verifier, SessionTicketsDisabled: true, CurvePreferences: curves, MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13}
+			transport := &http.Transport{TLSClientConfig: clientConfig}
+			defer transport.CloseIdleConnections()
+			client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+			response, err := client.Get(gatewayURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(response.Body)
+			response.Body.Close()
+			if response.StatusCode != 200 || string(body) != "hybrid-gateway-ok" || response.TLS.Version != tls.VersionTLS13 {
+				t.Fatalf("unexpected response %d %q", response.StatusCode, body)
+			}
+			if err := run([]string{"probe", "-url", gatewayURL, "-ca", cfg.RootCA, "-auth", tc.auth, "-server-name", cfg.ServerName, "-kex", tc.kex}); err != nil {
+				t.Fatalf("hybrid probe: %v", err)
+			}
+			wrong := clientConfig.Clone()
+			wrong.ServerName = "wrong.factory.local"
+			wrongTransport := &http.Transport{TLSClientConfig: wrong}
+			defer wrongTransport.CloseIdleConnections()
+			if response, err := (&http.Client{Transport: wrongTransport, Timeout: 5 * time.Second}).Get(gatewayURL); err == nil {
+				response.Body.Close()
+				t.Fatal("accepted wrong server name")
+			}
+		})
+	}
+}
 
 func TestProxyAndCertificateVerification(t *testing.T) {
 	dir := t.TempDir()
@@ -99,6 +165,32 @@ func TestConfigRejectsInvalidInputs(t *testing.T) {
 	}
 	if _, err := selectGroups([]string{"", "bogus"}); err == nil {
 		t.Fatal("accepted unknown group")
+	}
+}
+
+func TestHybridConfigRejectsIncompleteOrMixedAuthentication(t *testing.T) {
+	valid := Config{Listen: ":8443", Upstream: "http://127.0.0.1:9000", Auth: "sm2-mldsa-44", Cert: "server.crt", Key: "server.key", PQKey: "server.pq.key", RootCA: "root.crt", ServerName: "gateway.factory.local", KEX: []string{"SM2Kyber512Draft00"}}
+	if err := valid.validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*Config)
+	}{
+		{"missing PQ key", func(c *Config) { c.PQKey = "" }},
+		{"missing root", func(c *Config) { c.RootCA = "" }},
+		{"missing name", func(c *Config) { c.ServerName = "" }},
+		{"unsupported auth", func(c *Config) { c.Auth = "dilithium" }},
+		{"mixed traditional client CA", func(c *Config) { c.ClientCA = "client-ca.crt" }},
+		{"hybrid fields with traditional auth", func(c *Config) { c.Auth = "ecdsa" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := valid
+			tc.change(&c)
+			if err := c.validate(); err == nil {
+				t.Fatal("accepted invalid hybrid configuration")
+			}
+		})
 	}
 }
 

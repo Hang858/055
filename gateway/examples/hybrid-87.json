@@ -1,0 +1,12 @@
+{
+  "listen": "0.0.0.0:8443",
+  "upstream": "http://127.0.0.1:9000",
+  "auth": "sm2-mldsa-87",
+  "cert": "../certs/server.crt",
+  "key": "../certs/server.key",
+  "pq_key": "../certs/server.pq.key",
+  "root_ca": "../certs/root.crt",
+  "intermediates": [],
+  "server_name": "gateway.factory.local",
+  "kex": ["SM2Kyber1024Draft00"]
+}

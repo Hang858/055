@@ -10,6 +10,7 @@ Ed25519-Dilithium 混合签名，并把部分 Go 1.24 时代的 TLS 特性（ECH
 | `go1.22.12-crypto-tls.patch` | `src/crypto/tls/**` 与 `src/vendor/modules.txt` 的完整 diff（8067 行，`-p1` 可用；2026-09 增补 SM2+HQC 两组后重新生成） |
 | `vendor-circl.tgz` | 补丁新增的 `src/vendor/github.com/cloudflare/circl` 目录（解压即用） |
 | `PATCH-SURFACE.txt` | 补丁后的 GOROOT 与官方 Go 1.22.12 的完整差异清单（含构建生成物、遗留目录） |
+| `go1.22.12-sm2-mldsa-auth.patch` | 在上一补丁之上增加 TLS 1.3 SM2+ML-DSA-44/87 服务端认证入口；须在第一份补丁之后应用 |
 
 ## 应用方法
 
@@ -18,12 +19,14 @@ Ed25519-Dilithium 混合签名，并把部分 Go 1.24 时代的 TLS 特性（ECH
 ```sh
 tar xzf go1.22.12.src.tar.gz && cd go
 patch -p1 < /path/to/patches/go1.22.12-crypto-tls.patch
+patch -p1 < /path/to/patches/go1.22.12-sm2-mldsa-auth.patch
 tar xzf /path/to/patches/vendor-circl.tgz -C src/vendor/github.com/cloudflare
 GOROOT_BOOTSTRAP=/usr/lib/go-1.22 ./src/make.bash
 ```
 
-补丁已用 `patch -p1 -R --dry-run` 对现有 GOROOT 反向校验通过，说明与仓库里
-`go1.22.12/` 的状态完全一致。
+新增的服务端认证补丁已在上一补丁形成的源码上重放，并与本地测试源码逐字节比对。新增部分不把旧 Dilithium 实现改名为 ML-DSA；标准 ML-DSA 实现由网关模块中的 CIRCL 1.6.3 提供。
+
+新增补丁提供`tls.SM2WithMLDSA44`（`0xfea0`）、`tls.SM2WithMLDSA87`（`0xfea1`）、`Config.HybridAuthScheme`和`Config.VerifyHybridServer`。只有显式设置混合认证策略才宣告私有码点。TLS 代码把原始证书链及`CertificateVerify`待签名输入交给网关证书适配层校验；会话恢复被禁用。此入口只覆盖服务端认证，混合 mTLS 客户端认证仍待下一阶段。
 
 ## 变更内容
 

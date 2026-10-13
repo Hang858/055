@@ -1,0 +1,172 @@
+--- a/src/crypto/tls/common.go
++++ b/src/crypto/tls/common.go
+@@ -192,6 +192,7 @@
+ 	signatureEd25519
+ 	signatureEdDilithium2
+ 	signatureEdDilithium3
++	signatureSM2MLDSA
+ )
+ 
+ // directSigning is a standard Hash value that signals that no pre-hashing
+@@ -463,6 +464,9 @@
+ 
+ 	// EdDSA algorithms.
+ 	Ed25519 SignatureScheme = 0x0807
++	// Private-use code points for this project's SM2 + ML-DSA TLS 1.3 profile.
++	SM2WithMLDSA44 SignatureScheme = 0xfea0
++	SM2WithMLDSA87 SignatureScheme = 0xfea1
+ 
+ 	// Legacy signature and hash algorithms for TLS 1.2.
+ 	PKCS1WithSHA1 SignatureScheme = 0x0201
+@@ -862,6 +866,14 @@
+ 	// signature schemes are supported for peer certificates. For available
+ 	// signature schemes, see tls_cf.go.
+ 	PQSignatureSchemesEnabled bool
++
++	// HybridAuthScheme opts in to the private SM2 + ML-DSA TLS 1.3 profile.
++	// Only this signature scheme is advertised; ordinary authentication cannot
++	// be selected as a fallback. Session resumption must be disabled by callers.
++	HybridAuthScheme SignatureScheme
++	// VerifyHybridServer validates the raw server chain and both signatures on
++	// the TLS 1.3 CertificateVerify input. It is required on hybrid clients.
++	VerifyHybridServer func(rawCerts [][]byte, serverName string, signed, signature []byte) error
+ 
+ 	// DynamicRecordSizingDisabled disables adaptive sizing of TLS records.
+ 	// When true, the largest possible TLS record size is always used. When
+@@ -991,6 +1003,8 @@
+ 		CurvePreferences:            c.CurvePreferences,
+ 		ClientCurveGuess:            c.ClientCurveGuess,
+ 		PQSignatureSchemesEnabled:   c.PQSignatureSchemesEnabled,
++		HybridAuthScheme:            c.HybridAuthScheme,
++		VerifyHybridServer:          c.VerifyHybridServer,
+ 		DynamicRecordSizingDisabled: c.DynamicRecordSizingDisabled,
+ 		Renegotiation:               c.Renegotiation,
+ 		KeyLogWriter:                c.KeyLogWriter,
+--- a/src/crypto/tls/auth.go
++++ b/src/crypto/tls/auth.go
+@@ -118,6 +118,8 @@
+ 		sigType = signatureECDSA
+ 	case Ed25519:
+ 		sigType = signatureEd25519
++	case SM2WithMLDSA44, SM2WithMLDSA87:
++		sigType = signatureSM2MLDSA
+ 	default:
+ 		scheme := circlPki.SchemeByTLSID(uint(signatureAlgorithm))
+ 		if scheme == nil {
+@@ -139,6 +141,8 @@
+ 	case PKCS1WithSHA512, PSSWithSHA512, ECDSAWithP521AndSHA512:
+ 		hash = crypto.SHA512
+ 	case Ed25519:
++		hash = directSigning
++	case SM2WithMLDSA44, SM2WithMLDSA87:
+ 		hash = directSigning
+ 	default:
+ 		scheme := circlPki.SchemeByTLSID(uint(signatureAlgorithm))
+@@ -198,6 +202,16 @@
+ // This function must be kept in sync with supportedSignatureAlgorithms.
+ // FIPS filtering is applied in the caller, selectSignatureScheme.
+ func signatureSchemesForCertificate(version uint16, cert *Certificate) []SignatureScheme {
++	if signer, ok := cert.PrivateKey.(interface{ TLSHybridSignatureScheme() SignatureScheme }); ok {
++		if version != VersionTLS13 {
++			return nil
++		}
++		scheme := signer.TLSHybridSignatureScheme()
++		if scheme != SM2WithMLDSA44 && scheme != SM2WithMLDSA87 {
++			return nil
++		}
++		return []SignatureScheme{scheme}
++	}
+ 	priv, ok := cert.PrivateKey.(crypto.Signer)
+ 	if !ok {
+ 		return nil
+--- a/src/crypto/tls/tls_cf.go
++++ b/src/crypto/tls/tls_cf.go
+@@ -49,6 +49,12 @@
+ // schemes are only included when tls.Config#PQSignatureSchemesEnabled is set
+ // and FIPS-only mode is not enabled.
+ func (c *Config) supportedSignatureAlgorithms() []SignatureScheme {
++	if c != nil && c.HybridAuthScheme != 0 {
++		if c.HybridAuthScheme == SM2WithMLDSA44 || c.HybridAuthScheme == SM2WithMLDSA87 {
++			return []SignatureScheme{c.HybridAuthScheme}
++		}
++		return nil
++	}
+ 	// If FIPS-only mode is requested, do not add other algos.
+ 	if needFIPS() {
+ 		return supportedSignatureAlgorithms()
+--- a/src/crypto/tls/handshake_client_tls13.go
++++ b/src/crypto/tls/handshake_client_tls13.go
+@@ -759,6 +759,10 @@
+ 	// Either a PSK or a certificate is always used, but not both.
+ 	// See RFC 8446, Section 4.1.1.
+ 	if hs.usingPSK {
++		if c.config.HybridAuthScheme != 0 {
++			c.sendAlert(alertHandshakeFailure)
++			return errors.New("tls: hybrid authentication forbids session resumption")
++		}
+ 		// Make sure the connection is still being verified whether or not this
+ 		// is a resumption. Resumptions currently don't reverify certificates so
+ 		// they don't call verifyServerCertificate. See Issue 31641.
+@@ -801,8 +805,13 @@
+ 	c.scts = certMsg.certificate.SignedCertificateTimestamps
+ 	c.ocspResponse = certMsg.certificate.OCSPStaple
+ 
+-	if err := c.verifyServerCertificate(certMsg.certificate.Certificate); err != nil {
+-		return err
++	if c.config.HybridAuthScheme == 0 {
++		if err := c.verifyServerCertificate(certMsg.certificate.Certificate); err != nil {
++			return err
++		}
++	} else if c.config.VerifyHybridServer == nil || !c.config.SessionTicketsDisabled {
++		c.sendAlert(alertHandshakeFailure)
++		return errors.New("tls: hybrid client requires certificate verifier and disabled session tickets")
+ 	}
+ 
+ 	// certificateVerifyMsg is included in the transcript, but not until
+@@ -823,6 +832,22 @@
+ 	if !isSupportedSignatureAlgorithm(certVerify.signatureAlgorithm, c.config.supportedSignatureAlgorithms()) {
+ 		c.sendAlert(alertIllegalParameter)
+ 		return errors.New("tls: certificate used with invalid signature algorithm")
++	}
++	if c.config.HybridAuthScheme != 0 {
++		if certVerify.signatureAlgorithm != c.config.HybridAuthScheme || certMsg.delegatedCredential {
++			c.sendAlert(alertIllegalParameter)
++			return errors.New("tls: hybrid server used unexpected authentication scheme")
++		}
++		signed := signedMessage(directSigning, serverSignatureContext, hs.transcript)
++		if err := c.config.VerifyHybridServer(certMsg.certificate.Certificate, c.config.ServerName, signed, certVerify.signature); err != nil {
++			c.sendAlert(alertBadCertificate)
++			return fmt.Errorf("tls: hybrid server authentication failed: %w", err)
++		}
++		if err := transcriptMsg(certVerify, hs.transcript); err != nil {
++			return err
++		}
++		hs.hsTimings.ReadCertificateVerify = hs.hsTimings.elapsedTime()
++		return nil
+ 	}
+ 
+ 	sigType, sigHash, err := typeAndHashFromSignatureScheme(certVerify.signatureAlgorithm)
+--- a/src/crypto/tls/handshake_server_tls13.go
++++ b/src/crypto/tls/handshake_server_tls13.go
+@@ -92,6 +92,10 @@
+ 
+ func (hs *serverHandshakeStateTLS13) handshake() error {
+ 	c := hs.c
++	if c.config.HybridAuthScheme != 0 && !c.config.SessionTicketsDisabled {
++		c.sendAlert(alertHandshakeFailure)
++		return errors.New("tls: hybrid authentication requires disabled session tickets")
++	}
+ 
+ 	if needFIPS() {
+ 		return errors.New("tls: internal error: TLS 1.3 reached in FIPS mode")
+@@ -573,6 +577,10 @@
+ 		c.sendAlert(alertHandshakeFailure)
+ 		return err
+ 	}
++	if c.config.HybridAuthScheme != 0 && (hs.sigAlg != c.config.HybridAuthScheme || !c.config.SessionTicketsDisabled) {
++		c.sendAlert(alertHandshakeFailure)
++		return errors.New("tls: hybrid server requires matching signature scheme and disabled session tickets")
++	}
+ 
+ 	hs.cert = certificate
+ 

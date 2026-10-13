@@ -188,11 +188,85 @@ func LoadChain(rootPath string, intermediatePaths []string, leafPath, sm2KeyPath
 	if len(intermediatePaths) > 4 {
 		return nil, errors.New("too many intermediate certificates")
 	}
-	scheme, oid, err := schemeFor(level)
+	rootDER, err := readPEM(rootPath, "CERTIFICATE")
 	if err != nil {
 		return nil, err
 	}
-	rootDER, err := readPEM(rootPath, "CERTIFICATE")
+	var intermediates [][]byte
+	for _, path := range intermediatePaths {
+		der, err := readPEM(path, "CERTIFICATE")
+		if err != nil {
+			return nil, err
+		}
+		intermediates = append(intermediates, der)
+	}
+	leafDER, err := readPEM(leafPath, "CERTIFICATE")
+	if err != nil {
+		return nil, err
+	}
+	wireChain := [][]byte{leafDER}
+	for i := len(intermediates) - 1; i >= 0; i-- {
+		wireChain = append(wireChain, intermediates[i])
+	}
+	identity, err := VerifyDERChain(rootDER, wireChain, level, purpose, serverName, now)
+	if err != nil {
+		return nil, err
+	}
+	scheme, _, _ := schemeFor(level)
+	sm2DER, err := readPEM(sm2KeyPath, "PRIVATE KEY")
+	if err != nil {
+		return nil, err
+	}
+	sm2Private, err := gx.ParsePKCS8UnecryptedPrivateKey(sm2DER)
+	if err != nil {
+		return nil, err
+	}
+	if sm2Private.X.Cmp(identity.SM2Public.X) != 0 || sm2Private.Y.Cmp(identity.SM2Public.Y) != 0 {
+		return nil, errors.New("SM2 private key does not match certificate")
+	}
+	pqDER, err := readPEM(pqKeyPath, "PQC PRIVATE KEY")
+	if err != nil {
+		return nil, err
+	}
+	pqPrivate, err := scheme.UnmarshalBinaryPrivateKey(pqDER)
+	if err != nil {
+		return nil, err
+	}
+	pqPrivatePublic, ok := pqPrivate.Public().(sign.PublicKey)
+	if !ok {
+		return nil, errors.New("invalid ML-DSA private key public component")
+	}
+	pubBytes, err := pqPrivatePublic.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	wantBytes, err := identity.PQPublic.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(pubBytes, wantBytes) {
+		return nil, errors.New("ML-DSA private key does not match certificate")
+	}
+	identity.SM2Private = sm2Private
+	identity.PQPrivate = pqPrivate
+	return identity, nil
+}
+
+// VerifyDERChain verifies the peer's wire chain, which must be leaf first,
+// followed by zero to four intermediates. The root is a locally trusted DER certificate.
+func VerifyDERChain(rootDER []byte, wireChain [][]byte, level hybridsig.Level, purpose Purpose, serverName string, now time.Time) (*Identity, error) {
+	if len(wireChain) < 1 || len(wireChain) > 5 {
+		return nil, errors.New("invalid hybrid certificate chain length")
+	}
+	if len(rootDER) == 0 || len(rootDER) > 1024*1024 {
+		return nil, errors.New("invalid trusted root certificate size")
+	}
+	for _, der := range wireChain {
+		if len(der) == 0 || len(der) > 1024*1024 {
+			return nil, errors.New("invalid peer certificate size")
+		}
+	}
+	scheme, oid, err := schemeFor(level)
 	if err != nil {
 		return nil, err
 	}
@@ -202,28 +276,15 @@ func LoadChain(rootPath string, intermediatePaths []string, leafPath, sm2KeyPath
 	}
 	chainRaw := []*certificate{rootRaw}
 	chain := []*gx.Certificate{root}
-	for _, path := range intermediatePaths {
-		der, err := readPEM(path, "CERTIFICATE")
-		if err != nil {
-			return nil, err
-		}
-		raw, cert, err := parseCertificate(der)
+	for i := len(wireChain) - 1; i >= 0; i-- {
+		raw, cert, err := parseCertificate(wireChain[i])
 		if err != nil {
 			return nil, err
 		}
 		chainRaw = append(chainRaw, raw)
 		chain = append(chain, cert)
 	}
-	leafDER, err := readPEM(leafPath, "CERTIFICATE")
-	if err != nil {
-		return nil, err
-	}
-	leafRaw, leaf, err := parseCertificate(leafDER)
-	if err != nil {
-		return nil, err
-	}
-	chainRaw = append(chainRaw, leafRaw)
-	chain = append(chain, leaf)
+	leaf := chain[len(chain)-1]
 	for _, c := range chain {
 		if now.Before(c.NotBefore) || !now.Before(c.NotAfter) {
 			return nil, errors.New("certificate outside validity period")
@@ -300,40 +361,9 @@ func LoadChain(rootPath string, intermediatePaths []string, leafPath, sm2KeyPath
 	if len(leaf.ExtKeyUsage) != 1 || leaf.ExtKeyUsage[0] != wantUsage {
 		return nil, errors.New("certificate TLS purpose mismatch")
 	}
-	sm2DER, err := readPEM(sm2KeyPath, "PRIVATE KEY")
-	if err != nil {
-		return nil, err
-	}
-	sm2Private, err := gx.ParsePKCS8UnecryptedPrivateKey(sm2DER)
-	if err != nil {
-		return nil, err
-	}
 	sm2Public, ok := leaf.PublicKey.(*ecdsa.PublicKey)
-	if !ok || sm2Public.Curve != sm2.P256Sm2() || sm2Private.X.Cmp(sm2Public.X) != 0 || sm2Private.Y.Cmp(sm2Public.Y) != 0 {
-		return nil, errors.New("SM2 private key does not match certificate")
+	if !ok || sm2Public.Curve != sm2.P256Sm2() {
+		return nil, errors.New("certificate does not contain SM2 public key")
 	}
-	pqDER, err := readPEM(pqKeyPath, "PQC PRIVATE KEY")
-	if err != nil {
-		return nil, err
-	}
-	pqPrivate, err := scheme.UnmarshalBinaryPrivateKey(pqDER)
-	if err != nil {
-		return nil, err
-	}
-	pqPrivatePublic, ok := pqPrivate.Public().(sign.PublicKey)
-	if !ok {
-		return nil, errors.New("invalid ML-DSA private key public component")
-	}
-	pubBytes, err := pqPrivatePublic.MarshalBinary()
-	if err != nil {
-		return nil, err
-	}
-	wantBytes, err := leafPQ.MarshalBinary()
-	if err != nil {
-		return nil, err
-	}
-	if !bytes.Equal(pubBytes, wantBytes) {
-		return nil, errors.New("ML-DSA private key does not match certificate")
-	}
-	return &Identity{sm2Private, pqPrivate, &sm2Private.PublicKey, leafPQ, leafDER}, nil
+	return &Identity{SM2Public: &sm2.PublicKey{Curve: sm2Public.Curve, X: sm2Public.X, Y: sm2Public.Y}, PQPublic: leafPQ, LeafDER: wireChain[0]}, nil
 }

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"pqc-gateway/hybridcert"
 )
 
 var version = "dev"
@@ -26,7 +28,7 @@ func run(args []string) error {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	switch args[0] {
 	case "version":
-		fmt.Printf("pqc-gateway %s TLS=patched-Go-1.22.12 PQ=KyberDraft00 HQC=%t auth=ECDSA-P256\n", version, tls.HQCEnabled())
+		fmt.Printf("pqc-gateway %s TLS=patched-Go-1.22.12 PQ=KyberDraft00 HQC=%t auth=ECDSA-P256,SM2+ML-DSA-44/87\n", version, tls.HQCEnabled())
 		return nil
 	case "pki":
 		out := fs.String("out", "certs", "new or empty output directory")
@@ -83,6 +85,7 @@ func run(args []string) error {
 		ca := fs.String("ca", "certs/ca.crt", "trusted gateway CA")
 		kex := fs.String("kex", "SM2Kyber512Draft00", "comma-separated PQ groups")
 		serverName := fs.String("server-name", "", "override TLS certificate DNS name (SNI)")
+		auth := fs.String("auth", "ecdsa", "authentication: ecdsa, sm2-mldsa-44 or sm2-mldsa-87")
 		cert := fs.String("cert", "", "optional mTLS client certificate")
 		key := fs.String("key", "", "optional mTLS client key")
 		data := fs.String("data", "", "POST body (default GET)")
@@ -93,16 +96,36 @@ func run(args []string) error {
 		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
 			return fmt.Errorf("probe URL must be https without credentials")
 		}
-		roots, err := loadCA(*ca)
-		if err != nil {
-			return err
-		}
 		curves, err := selectGroups(strings.Split(*kex, ","))
 		if err != nil {
 			return err
 		}
-		tc := &tls.Config{RootCAs: roots, ServerName: *serverName, CurvePreferences: curves, MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13}
+		name := *serverName
+		if name == "" {
+			name = u.Hostname()
+		}
+		tc := &tls.Config{ServerName: name, CurvePreferences: curves, MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13}
+		if *auth == "ecdsa" {
+			tc.RootCAs, err = loadCA(*ca)
+			if err != nil {
+				return err
+			}
+		} else {
+			level, err := authLevel(*auth)
+			if err != nil {
+				return err
+			}
+			tc.HybridAuthScheme, _ = hybridcert.Scheme(level)
+			tc.VerifyHybridServer, err = hybridcert.NewServerVerifier(*ca, level)
+			if err != nil {
+				return err
+			}
+			tc.SessionTicketsDisabled = true
+		}
 		if *cert != "" || *key != "" {
+			if *auth != "ecdsa" {
+				return fmt.Errorf("hybrid mTLS is not available in this phase")
+			}
 			c, err := tls.LoadX509KeyPair(*cert, *key)
 			if err != nil {
 				return err
@@ -135,7 +158,7 @@ func run(args []string) error {
 		if !negotiated || resp.TLS == nil || resp.TLS.Version != tls.VersionTLS13 {
 			return fmt.Errorf("PQ TLS 1.3 negotiation was not observed")
 		}
-		fmt.Fprintln(os.Stderr, "http_status=", resp.StatusCode, "certificate_verified=true")
+		fmt.Fprintln(os.Stderr, "http_status=", resp.StatusCode, "certificate_verified=true", "authenticated_signature="+*auth)
 		if _, err = io.Copy(os.Stdout, io.LimitReader(resp.Body, 1<<20)); err != nil {
 			return err
 		}

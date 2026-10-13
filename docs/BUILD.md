@@ -24,6 +24,7 @@ tar xzf go1.22.12.src.tar.gz
 # 2. 打补丁（补丁路径为 a/src/... 与 b/src/...，所以用 -p1，在 GOROOT 根目录执行）
 cd go
 patch -p1 < /path/to/patches/go1.22.12-crypto-tls.patch
+patch -p1 < /path/to/patches/go1.22.12-sm2-mldsa-auth.patch
 
 # 3. 放入补丁新增的 CIRCL vendor 树（归档内是 circl/ 目录）
 tar xzf /path/to/patches/vendor-circl.tgz -C src/vendor/github.com/cloudflare

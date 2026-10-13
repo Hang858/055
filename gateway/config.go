@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+
+	"pqc-gateway/hybridsig"
 )
 
 type Config struct {
@@ -20,6 +22,22 @@ type Config struct {
 	UpstreamCA         string   `json:"upstream_ca,omitempty"`
 	UpstreamServerName string   `json:"upstream_server_name,omitempty"`
 	ClientCA           string   `json:"client_ca,omitempty"`
+	Auth               string   `json:"auth,omitempty"`
+	PQKey              string   `json:"pq_key,omitempty"`
+	RootCA             string   `json:"root_ca,omitempty"`
+	Intermediates      []string `json:"intermediates,omitempty"`
+	ServerName         string   `json:"server_name,omitempty"`
+}
+
+func authLevel(name string) (hybridsig.Level, error) {
+	switch name {
+	case "sm2-mldsa-44":
+		return hybridsig.Level128, nil
+	case "sm2-mldsa-87":
+		return hybridsig.Level256, nil
+	default:
+		return 0, fmt.Errorf("unsupported auth mode %q", name)
+	}
 }
 
 var groups = map[string]tls.CurveID{
@@ -73,6 +91,22 @@ func (c Config) validate() error {
 	if c.Cert == "" || c.Key == "" {
 		return fmt.Errorf("cert and key are required")
 	}
+	if c.Auth != "" && c.Auth != "ecdsa" {
+		if _, err := authLevel(c.Auth); err != nil {
+			return err
+		}
+		if c.PQKey == "" || c.RootCA == "" || c.ServerName == "" {
+			return fmt.Errorf("hybrid auth requires pq_key, root_ca and server_name")
+		}
+		if c.ClientCA != "" {
+			return fmt.Errorf("hybrid client authentication is not available in this phase")
+		}
+		if len(c.Intermediates) > 4 {
+			return fmt.Errorf("at most four intermediate CAs are supported")
+		}
+	} else if c.PQKey != "" || c.RootCA != "" || len(c.Intermediates) != 0 || c.ServerName != "" {
+		return fmt.Errorf("hybrid certificate fields require sm2-mldsa authentication")
+	}
 	if _, err := selectGroups(c.KEX); err != nil {
 		return err
 	}
@@ -94,9 +128,14 @@ func loadConfig(path string) (Config, error) {
 	if err = d.Decode(new(any)); err != io.EOF {
 		return c, fmt.Errorf("config contains trailing data")
 	}
-	for _, p := range []*string{&c.Cert, &c.Key, &c.UpstreamCA, &c.ClientCA} {
+	for _, p := range []*string{&c.Cert, &c.Key, &c.UpstreamCA, &c.ClientCA, &c.PQKey, &c.RootCA} {
 		if *p != "" && !filepath.IsAbs(*p) {
 			*p = filepath.Join(filepath.Dir(path), *p)
+		}
+	}
+	for i := range c.Intermediates {
+		if !filepath.IsAbs(c.Intermediates[i]) {
+			c.Intermediates[i] = filepath.Join(filepath.Dir(path), c.Intermediates[i])
 		}
 	}
 	return c, c.validate()

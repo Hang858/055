@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"pqc-gateway/hybridcert"
 )
 
 func loadCA(path string) (*x509.CertPool, error) {
@@ -31,18 +33,33 @@ func newGateway(c Config) (*http.Server, error) {
 		return nil, err
 	}
 	curves, _ := selectGroups(c.KEX)
-	cert, err := tls.LoadX509KeyPair(c.Cert, c.Key)
-	if err != nil {
-		return nil, err
-	}
-	leaf, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		return nil, err
-	}
-	if time.Now().Before(leaf.NotBefore) || time.Now().After(leaf.NotAfter) {
-		return nil, fmt.Errorf("server certificate is outside its validity period")
+	var cert tls.Certificate
+	var err error
+	if c.Auth == "" || c.Auth == "ecdsa" {
+		cert, err = tls.LoadX509KeyPair(c.Cert, c.Key)
+		if err != nil {
+			return nil, err
+		}
+		leaf, err := x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			return nil, err
+		}
+		if time.Now().Before(leaf.NotBefore) || time.Now().After(leaf.NotAfter) {
+			return nil, fmt.Errorf("server certificate is outside its validity period")
+		}
+	} else {
+		level, _ := authLevel(c.Auth)
+		cert, err = hybridcert.ServerCertificate(c.RootCA, c.Intermediates, c.Cert, c.Key, c.PQKey, level, c.ServerName)
+		if err != nil {
+			return nil, err
+		}
 	}
 	tc := &tls.Config{Certificates: []tls.Certificate{cert}, CurvePreferences: curves, MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13, NextProtos: []string{"http/1.1"}}
+	if c.Auth != "" && c.Auth != "ecdsa" {
+		level, _ := authLevel(c.Auth)
+		tc.HybridAuthScheme, _ = hybridcert.Scheme(level)
+		tc.SessionTicketsDisabled = true
+	}
 	if c.ClientCA != "" {
 		tc.ClientCAs, err = loadCA(c.ClientCA)
 		if err != nil {
