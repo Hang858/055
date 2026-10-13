@@ -23,16 +23,19 @@ func TestHybridGatewayProxy(t *testing.T) {
 	}))
 	defer backend.Close()
 	for _, tc := range []struct {
-		name  string
-		auth  string
-		level hybridsig.Level
-		kex   string
+		name    string
+		fixture string
+		auth    string
+		level   hybridsig.Level
+		kex     string
 	}{
-		{"44", "sm2-mldsa-44", hybridsig.Level128, "SM2Kyber512Draft00"},
-		{"87", "sm2-mldsa-87", hybridsig.Level256, "SM2Kyber1024Draft00"},
+		{"44-kyber", "44", "sm2-mldsa-44", hybridsig.Level128, "SM2Kyber512Draft00"},
+		{"87-kyber", "87", "sm2-mldsa-87", hybridsig.Level256, "SM2Kyber1024Draft00"},
+		{"44-mlkem", "44", "sm2-mldsa-44", hybridsig.Level128, "SM2MLKEM512"},
+		{"87-mlkem", "87", "sm2-mldsa-87", hybridsig.Level256, "SM2MLKEM1024"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := filepath.Join("hybridcert", "testdata", tc.name)
+			dir := filepath.Join("hybridcert", "testdata", tc.fixture)
 			cfg := Config{Listen: "127.0.0.1:0", Upstream: backend.URL, Auth: tc.auth, Cert: filepath.Join(dir, "server.crt"), Key: filepath.Join(dir, "server.key"), PQKey: filepath.Join(dir, "server.pq.key"), RootCA: filepath.Join(dir, "root.crt"), ServerName: "gateway.factory.local", KEX: []string{tc.kex}}
 			server, err := newGateway(cfg)
 			if err != nil {
@@ -75,6 +78,19 @@ func TestHybridGatewayProxy(t *testing.T) {
 				response.Body.Close()
 				t.Fatal("accepted wrong server name")
 			}
+			if strings.HasSuffix(tc.name, "mlkem") {
+				legacy := clientConfig.Clone()
+				legacy.CurvePreferences, _ = selectGroups([]string{map[string]string{
+					"44-mlkem": "SM2Kyber512Draft00",
+					"87-mlkem": "SM2Kyber1024Draft00",
+				}[tc.name]})
+				legacyTransport := &http.Transport{TLSClientConfig: legacy}
+				defer legacyTransport.CloseIdleConnections()
+				if response, err := (&http.Client{Transport: legacyTransport, Timeout: 5 * time.Second}).Get(gatewayURL); err == nil {
+					response.Body.Close()
+					t.Fatal("accepted a legacy Kyber client for an ML-KEM-only gateway")
+				}
+			}
 		})
 	}
 }
@@ -85,15 +101,18 @@ func TestHybridGatewayMutualTLS(t *testing.T) {
 	}))
 	defer backend.Close()
 	for _, tc := range []struct {
-		name string
-		auth string
-		kex  string
+		name    string
+		fixture string
+		auth    string
+		kex     string
 	}{
-		{"44", "sm2-mldsa-44", "SM2Kyber512Draft00"},
-		{"87", "sm2-mldsa-87", "SM2Kyber1024Draft00"},
+		{"44-kyber", "44", "sm2-mldsa-44", "SM2Kyber512Draft00"},
+		{"87-kyber", "87", "sm2-mldsa-87", "SM2Kyber1024Draft00"},
+		{"44-mlkem", "44", "sm2-mldsa-44", "SM2MLKEM512"},
+		{"87-mlkem", "87", "sm2-mldsa-87", "SM2MLKEM1024"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := filepath.Join("hybridcert", "testdata", tc.name)
+			dir := filepath.Join("hybridcert", "testdata", tc.fixture)
 			cfg := Config{Listen: "127.0.0.1:0", Upstream: backend.URL, Auth: tc.auth, Cert: filepath.Join(dir, "server.crt"), Key: filepath.Join(dir, "server.key"), PQKey: filepath.Join(dir, "server.pq.key"), RootCA: filepath.Join(dir, "root.crt"), ClientCA: filepath.Join(dir, "root.crt"), ServerName: "gateway.factory.local", KEX: []string{tc.kex}}
 			server, err := newGateway(cfg)
 			if err != nil {
@@ -143,7 +162,7 @@ func TestProxyAndCertificateVerification(t *testing.T) {
 		w.Write(body)
 	}))
 	defer upstream.Close()
-	testGroups := []string{"SM2Kyber512Draft00", "SM2Kyber768Draft00", "SM2Kyber1024Draft00", "X25519Kyber512Draft00", "X25519Kyber768Draft00", "X25519Kyber1024Draft00"}
+	testGroups := []string{"SM2MLKEM512", "SM2MLKEM1024", "SM2Kyber512Draft00", "SM2Kyber768Draft00", "SM2Kyber1024Draft00", "X25519Kyber512Draft00", "X25519Kyber768Draft00", "X25519Kyber1024Draft00"}
 	if tls.HQCEnabled() {
 		testGroups = append(testGroups, "X25519HQC-128", "X25519HQC-256", "SM2HQC-128", "SM2HQC-256")
 	}

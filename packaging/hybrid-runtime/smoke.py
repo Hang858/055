@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run exact packaged binaries through two-level mTLS and HQC loopback probes."""
+"""Run packaged binaries through ML-KEM, legacy Kyber and HQC mTLS probes."""
 import argparse
 import json
 import socket
@@ -27,12 +27,15 @@ def ready(address, proc):
     raise RuntimeError("service did not listen")
 
 
-def run_case(bundle, level, hqc):
+def run_case(bundle, level, family):
     name = str(level)
     auth = "sm2-mldsa-44" if level == 44 else "sm2-mldsa-87"
-    group = ("SM2HQC-128" if level == 44 else "SM2HQC-256") if hqc else (
-        "SM2Kyber512Draft00" if level == 44 else "SM2Kyber1024Draft00")
-    gateway = bundle / "bin" / ("pqc-gateway-hqc" if hqc else "pqc-gateway")
+    group = {
+        "mlkem": "SM2MLKEM512" if level == 44 else "SM2MLKEM1024",
+        "kyber": "SM2Kyber512Draft00" if level == 44 else "SM2Kyber1024Draft00",
+        "hqc": "SM2HQC-128" if level == 44 else "SM2HQC-256",
+    }[family]
+    gateway = bundle / "bin" / ("pqc-gateway-hqc" if family == "hqc" else "pqc-gateway")
     certs = bundle / "demo" / name
     backend_port, gateway_port = port(), port()
     while gateway_port == backend_port:
@@ -84,7 +87,7 @@ def run_case(bundle, level, hqc):
             traditional = subprocess.run(traditional_args, capture_output=True, text=True, timeout=20)
             if traditional.returncode == 0:
                 raise RuntimeError("traditional authentication downgrade was accepted")
-            return {"level": name, "hqc": hqc, "group": group,
+            return {"level": name, "family": family, "group": group,
                     "missing_client_rejected": True, "mutual_tls": True,
                     "wrong_level_rejected": True, "traditional_downgrade_rejected": True,
                     "reported_signature": auth, "missing_client_error": missing.stderr.strip(),
@@ -106,7 +109,7 @@ def main():
     parser.add_argument("--bundle", type=Path, default=Path(__file__).resolve().parent)
     args = parser.parse_args()
     bundle = args.bundle.resolve()
-    cases = [run_case(bundle, level, hqc) for hqc in (False, True) for level in (44, 87)]
+    cases = [run_case(bundle, level, family) for family in ("mlkem", "kyber", "hqc") for level in (44, 87)]
     print(json.dumps({"passed": True, "cases": cases}, ensure_ascii=False, indent=2))
 
 

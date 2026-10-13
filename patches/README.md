@@ -12,6 +12,7 @@ Ed25519-Dilithium 混合签名，并把部分 Go 1.24 时代的 TLS 特性（ECH
 | `PATCH-SURFACE.txt` | 补丁后的 GOROOT 与官方 Go 1.22.12 的完整差异清单（含构建生成物、遗留目录） |
 | `go1.22.12-sm2-mldsa-auth.patch` | 在上一补丁之上增加 TLS 1.3 SM2+ML-DSA-44/87 服务端认证入口；须在第一份补丁之后应用 |
 | `go1.22.12-sm2-mldsa-mtls.patch` | 在服务端认证补丁之上增加双向认证、实际签名码点和已验证原始证书链状态 |
+| `go1.22.12-sm2-mlkem.patch` | 在上述补丁之上新增 SM2+ML-KEM-512/1024 私有 TLS 组；vendor 归档同时增加 CIRCL ML-KEM 实现 |
 
 ## 应用方法
 
@@ -22,6 +23,7 @@ tar xzf go1.22.12.src.tar.gz && cd go
 patch -p1 < /path/to/patches/go1.22.12-crypto-tls.patch
 patch -p1 < /path/to/patches/go1.22.12-sm2-mldsa-auth.patch
 patch -p1 < /path/to/patches/go1.22.12-sm2-mldsa-mtls.patch
+patch -p1 < /path/to/patches/go1.22.12-sm2-mlkem.patch
 tar xzf /path/to/patches/vendor-circl.tgz -C src/vendor/github.com/cloudflare
 GOROOT_BOOTSTRAP=/usr/lib/go-1.22 ./src/make.bash
 ```
@@ -58,6 +60,7 @@ GOROOT_BOOTSTRAP=/usr/lib/go-1.22 ./src/make.bash
 | 混合密钥交换（192 比特） | `X25519Kyber768Draft00`(0x6399)、`X25519Kyber768Draft00Old`(0xfe31)、`P256Kyber768Draft00`(0xfe32)、`SM2Kyber768Draft00`(0xfe35) | |
 | 混合密钥交换（**256 比特**） | **`X25519Kyber1024Draft00`(0xfe36)、`SM2Kyber1024Draft00`(0xfe37)** | 本次新增。X25519 配对由 `hybrid.Kyber1024X25519()` 提供（CIRCL 原本只有 Kyber1024-X448 / Kyber1024-sm2） |
 | 其他 | `X25519MLKEM768`(0x11ec) | 只定义了码点，示例未启用 |
+| **SM2+标准 ML-KEM** | **`SM2MLKEM512`(0xfe3c)、`SM2MLKEM1024`(0xfe3d)** | 默认网关配置使用；KEM 实现为 CIRCL 的 FIPS 203 ML-KEM。混合组编码与码点为项目私有协议，须用配套客户端；旧 Kyber 组保留。 |
 | 签名 | `Ed25519+Dilithium2/3`（`EdDilithium2/3`） | 需 `Config.PQSignatureSchemesEnabled = true`，默认关闭 |
 | **HQC（可选编译）** | **`X25519HQC-128`(0xfe38)、`X25519HQC-256`(0xfe39)、`SM2HQC-128`(0xfe3a)、`SM2HQC-256`(0xfe3b)** | CIRCL 不含 HQC，适配器走 cgo 调 liboqs；SM2 混合组用 CIRCL 的 SM2 KEM（新增导出 `hybrid.SM2KEM()`）与 HQC 组合。四组均需 `-tags pq_hqc` 构建，默认构建下不可用。见 `../docs/HQC-TLS-最小改造路线.md` |
 

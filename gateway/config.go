@@ -41,6 +41,8 @@ func authLevel(name string) (hybridsig.Level, error) {
 }
 
 var groups = map[string]tls.CurveID{
+	"SM2MLKEM512":            tls.SM2MLKEM512,
+	"SM2MLKEM1024":           tls.SM2MLKEM1024,
 	"SM2Kyber512Draft00":     tls.SM2Kyber512Draft00,
 	"SM2Kyber768Draft00":     tls.SM2Kyber768Draft00,
 	"SM2Kyber1024Draft00":    tls.SM2Kyber1024Draft00,

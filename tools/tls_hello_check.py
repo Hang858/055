@@ -65,6 +65,8 @@ GROUPS = {
     0xfe39: ("X25519HQC-256",             32 + 7245, 32 + 14421),
     0xfe3a: ("SM2HQC-128",                 65 + 2249, 129 + 4433),
     0xfe3b: ("SM2HQC-256",                 65 + 7245, 129 + 14421),
+    0xfe3c: ("SM2MLKEM512",                65 + 800,  129 + 768),
+    0xfe3d: ("SM2MLKEM1024",               65 + 1568, 129 + 1568),
 }
 
 HANDSHAKE_TYPE = {1: "ClientHello", 2: "ServerHello"}
@@ -83,6 +85,8 @@ _EXPECT_ALIASES = {
     "x25519": "X25519",
     "sm2kyber512": "SM2Kyber512Draft00",
     "sm2kyber1024": "SM2Kyber1024Draft00",
+    "sm2mlkem512": "SM2MLKEM512",
+    "sm2mlkem1024": "SM2MLKEM1024",
     "mlkem768": "X25519MLKEM768",
     "x25519mlkem768": "X25519MLKEM768",
     "dummykex": "DummyKex",

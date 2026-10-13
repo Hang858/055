@@ -12,11 +12,11 @@
 ## TLS 安全网关厂内交付
 
 `gateway/` 是基于本项目 TLS 协议库的 HTTPS 反向代理，后端地址、证书和算法通过 JSON 配置。
-当前交付包为 [`dist/pqc-gateway-certtool-runtime-20261012.zip`](dist/pqc-gateway-certtool-runtime-20261012.zip)，
-面向 Ubuntu 20.04 / x86_64，包含静态网关、统一配置式证书工具、配置示例、证书样例、两份Word手册和验收记录，不含源码和浏览器。
+当前 ML-KEM 交付包为 [`dist/pqc-gateway-hybrid-mlkem-ubuntu20.04-amd64-20261013.zip`](dist/pqc-gateway-hybrid-mlkem-ubuntu20.04-amd64-20261013.zip)，
+面向 Ubuntu 20.04 / x86_64，包含静态网关、配置式证书工具、配置示例、演示证书及安装验收说明，不含源码和浏览器。默认密钥交换为 SM2+ML-KEM-512/1024，旧 Kyber 和可选 HQC 继续支持。
 六个 Kyber Draft00 组和四个 HQC 混合组可通过 `kex` 选择；liboqs 已静态链接。运行证书为 ECDSA。
 
-解压后按 `docs/TLS安全网关安装配置手册.docx` 操作。
+解压后按包内 `docs/安装配置说明.md` 操作。
 开发构建入口为 `packaging/build_gateway_release.py`（HQC使用 `--with-hqc`），
 验收入口为 `packaging/validate_gateway_release.py --hqc`。
 实际构建与测试环境为 Ubuntu 24.04；Ubuntu 20.04 实机及厂内业务按随包手册验收。

@@ -12,7 +12,7 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-NAME = "pqc-gateway-hybrid-ubuntu20.04-amd64-20261013"
+NAME = "pqc-gateway-hybrid-mlkem-ubuntu20.04-amd64-20261013"
 TLS_ROOT = ROOT / ".build/go"
 PQ_ROOT = ROOT / ".build/gopath/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.1.linux-amd64"
 
@@ -63,12 +63,12 @@ def build(bundle):
         tls_env(), bundle / "validation/gateway-tests.log")
     run([tls_go, "vet", "./..."], ROOT / "gateway", tls_env(),
         bundle / "validation/gateway-vet.log")
-    run([tls_go, "build", "-trimpath", "-ldflags=-s -w -X main.version=20261013-hybrid",
+    run([tls_go, "build", "-trimpath", "-ldflags=-s -w -X main.version=20261013-hybrid-mlkem",
          "-o", bin_dir / "pqc-gateway", "."], ROOT / "gateway", tls_env())
     run([tls_go, "test", "-tags=pq_hqc,netgo,osusergo", "./...", "-count=1", "-timeout=90s"],
         ROOT / "gateway", tls_env(True), bundle / "validation/gateway-hqc-tests.log")
     run([tls_go, "build", "-tags=pq_hqc,netgo,osusergo", "-trimpath",
-         "-ldflags=-s -w -linkmode external -extldflags -static -X main.version=20261013-hybrid-hqc",
+         "-ldflags=-s -w -linkmode external -extldflags -static -X main.version=20261013-hybrid-mlkem-hqc",
          "-o", bin_dir / "pqc-gateway-hqc", "."], ROOT / "gateway", tls_env(True))
     pq_env = os.environ.copy()
     pq_env.update(GOROOT=str(PQ_ROOT), GOMODCACHE=str(Path.home() / "go/pkg/mod"),
@@ -130,6 +130,7 @@ def build(bundle):
     (bundle / "validation/build-info.json").write_text(json.dumps({
         "target": "Ubuntu 20.04 / Linux amd64", "binary_only": True,
         "gateway_authentication": "SM2+ML-DSA-44/87 TLS 1.3 mutual authentication",
+        "default_key_exchange": "SM2MLKEM512/1024 (private-use TLS groups, FIPS 203 ML-KEM backend)",
         "hqc_binary_included": True, "local_smoke_passed": True,
         "target_machine_validation": "pending", "binaries_sha256": binaries,
     }, ensure_ascii=False, indent=2) + "\n")

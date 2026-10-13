@@ -8,5 +8,5 @@
   "root_ca": "../certs/root.crt",
   "intermediates": [],
   "server_name": "gateway.factory.local",
-  "kex": ["SM2Kyber1024Draft00"]
+  "kex": ["SM2MLKEM1024"]
 }

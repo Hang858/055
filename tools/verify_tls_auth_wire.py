@@ -79,19 +79,22 @@ def schemes(extension):
             for i in range(2, len(extension), 2)]
 
 
-def run_case(bundle, output, level, hqc):
+def run_case(bundle, output, level, family):
     name = str(level)
     auth = "sm2-mldsa-44" if level == 44 else "sm2-mldsa-87"
     codepoint = 0xfea0 if level == 44 else 0xfea1
-    group = ("SM2HQC-128" if level == 44 else "SM2HQC-256") if hqc else (
-        "SM2Kyber512Draft00" if level == 44 else "SM2Kyber1024Draft00")
-    executable = bundle / "bin" / ("pqc-gateway-hqc" if hqc else "pqc-gateway")
+    group = {
+        "mlkem": "SM2MLKEM512" if level == 44 else "SM2MLKEM1024",
+        "kyber": "SM2Kyber512Draft00" if level == 44 else "SM2Kyber1024Draft00",
+        "hqc": "SM2HQC-128" if level == 44 else "SM2HQC-256",
+    }[family]
+    executable = bundle / "bin" / ("pqc-gateway-hqc" if family == "hqc" else "pqc-gateway")
     certs = bundle / "demo" / name
     backend_port = free_port()
     gateway_port = free_port()
     while gateway_port == backend_port:
         gateway_port = free_port()
-    tag = f"{name}-{'hqc' if hqc else 'kyber'}"
+    tag = f"{name}-{family}"
     config = json.loads((bundle / "config" / f"demo-{name}.json").read_text())
     config.update(listen=f"127.0.0.1:{gateway_port}",
                   upstream=f"http://127.0.0.1:{backend_port}", kex=[group])
@@ -146,6 +149,10 @@ def run_case(bundle, output, level, hqc):
             raise RuntimeError("incomplete ClientHello/ServerHello capture")
         if advertised != [codepoint] or sh["key_share"][0] not in ch["supported_groups"]:
             raise RuntimeError("unexpected signature or key exchange negotiation")
+        expected = next((gid for gid, spec in hello.GROUPS.items() if spec[0] == group), None)
+        if expected is None or sh["key_share"] != (expected, hello.GROUPS[expected][2]) or (
+                expected, hello.GROUPS[expected][1]) not in ch["key_shares"]:
+            raise RuntimeError("wrong group or key share length for " + group)
         if f"codepoint=0x{codepoint:04x}" not in probe.stderr:
             raise RuntimeError("verified CertificateVerify scheme was not reported")
         return {"case": tag, "signature_algorithms": [f"0x{x:04x}" for x in advertised],
@@ -173,8 +180,8 @@ def main():
     bundle = args.bundle.resolve()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    cases = [run_case(bundle, output, level, hqc)
-             for hqc in (False, True) for level in (44, 87)]
+    cases = [run_case(bundle, output, level, family)
+             for family in ("mlkem", "kyber", "hqc") for level in (44, 87)]
     result = {"local_capture_passed": True, "capture_method": "local TCP relay, raw TLS records",
               "cases": cases}
     (output / "wire-report.json").write_text(json.dumps(result, indent=2) + "\n")

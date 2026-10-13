@@ -28,7 +28,7 @@ func run(args []string) error {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	switch args[0] {
 	case "version":
-		fmt.Printf("pqc-gateway %s TLS=patched-Go-1.22.12 PQ=KyberDraft00 HQC=%t auth=ECDSA-P256,SM2+ML-DSA-44/87\n", version, tls.HQCEnabled())
+		fmt.Printf("pqc-gateway %s TLS=patched-Go-1.22.12 PQ=ML-KEM,KyberDraft00 HQC=%t auth=ECDSA-P256,SM2+ML-DSA-44/87\n", version, tls.HQCEnabled())
 		return nil
 	case "pki":
 		out := fs.String("out", "certs", "new or empty output directory")
@@ -83,7 +83,7 @@ func run(args []string) error {
 	case "probe":
 		addr := fs.String("url", "https://localhost:8443/", "HTTPS gateway URL")
 		ca := fs.String("ca", "certs/ca.crt", "trusted gateway CA")
-		kex := fs.String("kex", "SM2Kyber512Draft00", "comma-separated PQ groups")
+		kex := fs.String("kex", "SM2MLKEM512", "comma-separated PQ groups")
 		serverName := fs.String("server-name", "", "override TLS certificate DNS name (SNI)")
 		auth := fs.String("auth", "ecdsa", "authentication: ecdsa, sm2-mldsa-44 or sm2-mldsa-87")
 		cert := fs.String("cert", "", "optional mTLS client certificate")

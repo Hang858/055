@@ -1,0 +1,36 @@
+--- a/src/crypto/tls/cfkem.go
++++ b/src/crypto/tls/cfkem.go
+@@ -25,6 +25,8 @@
+ 	"github.com/cloudflare/circl/hpke"
+ 	"github.com/cloudflare/circl/kem"
+ 	"github.com/cloudflare/circl/kem/hybrid"
++	"github.com/cloudflare/circl/kem/mlkem/mlkem1024"
++	"github.com/cloudflare/circl/kem/mlkem/mlkem512"
+ )
+ 
+ // Either *ecdh.PrivateKey or *kemPrivateKey
+@@ -53,8 +55,11 @@
+ 	X25519HQC128 = CurveID(0xfe38)
+ 	X25519HQC256 = CurveID(0xfe39)
+ 	// SM2 与 HQC 的混合组（国密 + 编码类抗量子；同样需 -tags pq_hqc 且链接 liboqs）
+-	SM2HQC128      = CurveID(0xfe3a)
+-	SM2HQC256      = CurveID(0xfe3b)
++	SM2HQC128 = CurveID(0xfe3a)
++	SM2HQC256 = CurveID(0xfe3b)
++	// Private-use SM2 hybrid groups using the FIPS 203 ML-KEM implementation.
++	SM2MLKEM512    = CurveID(0xfe3c)
++	SM2MLKEM1024   = CurveID(0xfe3d)
+ 	invalidCurveID = CurveID(0)
+ 
+ 	// A key agreeement similar in size but purposefully incompatible with
+@@ -87,6 +92,10 @@
+ 		return hybrid.Kyber1024X25519()
+ 	case SM2Kyber1024Draft00:
+ 		return hybrid.Kyber1024sm2()
++	case SM2MLKEM512:
++		return hybrid.NewHybridScheme("SM2MLKEM512", hybrid.SM2KEM(), mlkem512.Scheme())
++	case SM2MLKEM1024:
++		return hybrid.NewHybridScheme("SM2MLKEM1024", hybrid.SM2KEM(), mlkem1024.Scheme())
+ 	case X25519HQC128:
+ 		return newHQCScheme("HQC-128")
+ 	case X25519HQC256:
