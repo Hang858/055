@@ -21,9 +21,9 @@ const (
 	userLoginName = "admin3"
 )
 
-// OID
+// OID（ML-DSA-44 采用 RFC 9881 标准 OID）
 var (
-	oidMLDSA44          = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 11}
+	oidMLDSA44          = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 17}
 	oidCommonName       = asn1.ObjectIdentifier{2, 5, 4, 3}
 	oidBasicConstraints = asn1.ObjectIdentifier{2, 5, 29, 19}
 	oidKeyUsage         = asn1.ObjectIdentifier{2, 5, 29, 15}

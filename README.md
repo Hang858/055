@@ -61,8 +61,11 @@
 │   ├── 证书工具测试-输入及操作-细化.md  抗量子证书工具 25 条用例（ZS-1-1~ZS-3-3）的逐步骤命令与实测（.tsv 6 列）
 │   └── assets/        TLS 握手流程 / 密钥材料 / 测试拓扑图
 ├── tools/             测试辅助工具
-│   ├── tls_hello_check.py      握手报文解析 + 混合拼接长度断言（RFC 9954）
+│   ├── tshark_check.sh         用 tshark 解析握手报文并断言协商组/key_share 长度（测试使用）
+│   ├── tls_hello_check.py      旧版自研解析器，保留作独立交叉核对（测试不再调用）
 │   ├── tls_abnormal_hello.py   手工构造异常 ClientHello（版本/组）
+│   ├── tls_middlebox.py        中间盒模拟代理（TLS-2-7 三策略）
+│   ├── pcap_capture.py         user+net namespace 内抓包（无 root 时）
 │   └── tlsbench/               握手耗时与并发压测（Go 模块）
 ├── patches/           Go 1.22.12 crypto/tls 抗量子补丁（可复现）
 └── dist/              交付二进制留档（linux_*/windows_*.exe，不进 git）

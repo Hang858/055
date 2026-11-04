@@ -64,24 +64,25 @@ type BasicConstraints struct {
 	MaxPathLen int  `asn1:"optional,default:-1"`
 }
 
+// 算法标识统一采用已发布 RFC：ML-DSA 见 RFC 9881、ML-KEM 见 RFC 9935、SLH-DSA 见 RFC 9909
 var (
-	oidMLDSA44  = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 11}
-	oidMLDSA65  = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 12}
-	oidKyber512 = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 40801, 5, 1, 1}
-	oidKyber768 = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 40801, 5, 1, 2}
+	oidMLDSA44  = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 17}
+	oidMLDSA65  = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 18}
+	oidKyber512 = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 4, 1}
+	oidKyber768 = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 4, 2}
 
 	// 256 比特量子安全等级（与 ML-DSA-44/Kyber-512 的 128 比特等级配对）
-	oidMLDSA87   = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 13}
-	oidKyber1024 = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 40801, 5, 1, 3}
+	oidMLDSA87   = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 19}
+	oidKyber1024 = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 4, 3}
 
-	// 实验用 SPHINCS / SLH-DSA OID
-	oidSLHDSA128s = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 10, 1}
-	oidSLHDSA128f = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 10, 2}
+	// SLH-DSA OID（RFC 9909）；ML-DSA 见 RFC 9881，ML-KEM 见 RFC 9935
+	oidSLHDSA128s = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 20}
+	oidSLHDSA128f = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 21}
 	// 192 / 256 比特量子安全等级（哈希签名）
-	oidSLHDSA192s = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 10, 3}
-	oidSLHDSA192f = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 10, 4}
-	oidSLHDSA256s = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 10, 5}
-	oidSLHDSA256f = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 10, 6}
+	oidSLHDSA192s = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 22}
+	oidSLHDSA192f = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 23}
+	oidSLHDSA256s = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 24}
+	oidSLHDSA256f = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 25}
 
 	oidBasicConstraints = asn1.ObjectIdentifier{2, 5, 29, 19}
 	oidKeyUsage         = asn1.ObjectIdentifier{2, 5, 29, 15}

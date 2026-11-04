@@ -1,0 +1,50 @@
+--- a/src/crypto/tls/handshake_client_tls13.go
++++ b/src/crypto/tls/handshake_client_tls13.go
+@@ -514,7 +514,7 @@
+ 	}
+ 
+ 	// 将消息序列化并发送给服务器
+-	if _, err := hs.c.writeHandshakeRecord(pqMsg, nil); err != nil {
++	if _, err := hs.c.writeHandshakeRecord(pqMsg, hs.transcript); err != nil {
+ 		return err
+ 	}
+ 
+--- a/src/crypto/tls/handshake_server_tls13.go
++++ b/src/crypto/tls/handshake_server_tls13.go
+@@ -914,7 +914,7 @@
+ 
+ 		// 读取客户端的 PQ 密钥交换消息
+ 		log.Println("等待抗量子密文信息")
+-		msg, err := hs.c.readHandshake(nil)
++		msg, err := hs.c.readHandshake(hs.transcript)
+ 		if err != nil {
+ 			return err
+ 		}
+@@ -925,8 +925,25 @@
+ 			c.sendAlert(alertUnexpectedMessage)
+ 			return unexpectedMessageError(pqKeyExchange, msg)
+ 		}
+-		// 👈 这里需要去掉前四个byte
+-		pqKeyExchange.ciphertext = pqKeyExchange.ciphertext[4 : kyber768.CiphertextSize+4]
++		// 消息结构: [类型(1)][长度(3)][Kyber768 密文]
++		// 必须在切片前校验长度，避免畸形报文触发 panic。
++		if len(pqKeyExchange.ciphertext) != 4+kyber768.CiphertextSize {
++			c.sendAlert(alertIllegalParameter)
++			return errors.New("tls: invalid PQ client key exchange length")
++		}
++		if pqKeyExchange.ciphertext[0] != typePQClientKeyExchange {
++			c.sendAlert(alertIllegalParameter)
++			return errors.New("tls: invalid PQ client key exchange type")
++		}
++		innerLen := int(pqKeyExchange.ciphertext[1])<<16 |
++			int(pqKeyExchange.ciphertext[2])<<8 |
++			int(pqKeyExchange.ciphertext[3])
++		if innerLen != kyber768.CiphertextSize {
++			c.sendAlert(alertIllegalParameter)
++			return errors.New("tls: invalid PQ client key exchange inner length")
++		}
++		// 去掉内层 4 字节头，得到纯 Kyber768 密文。
++		pqKeyExchange.ciphertext = pqKeyExchange.ciphertext[4:]
+ 
+ 		// 使用服务器私钥解密客户端发送的密文
+ 		hs.pqSharedSecret, err = kyber768.Scheme().Decapsulate(hs.pqPrivKey, pqKeyExchange.ciphertext)

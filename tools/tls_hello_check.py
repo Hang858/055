@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 """解析 TLS 1.3 握手报文：ClientHello / ServerHello 的 supported_groups 与 key_share。
 
+注意：测试脚本已改用 tools/tshark_check.sh（tshark 官方解析）；本脚本保留作
+独立交叉核对/离线分析参考，不再被 tls-test-scripts 调用。
+
 用途
 ----
 对应 TLS 协议源码库测试用例：
@@ -395,19 +398,29 @@ def analyze(path, port=None):
         streams.setdefault((src, sport, dst, dport), []).append((seq, payload))
 
     result = {"file": path, "linktype": linktype, "client_hello": None,
-              "server_hello": None, "server_hellos": []}
+              "server_hello": None, "server_hellos": [], "client_hellos": []}
     for key, segs in streams.items():
         stream = reassemble(segs)
+        # 客户端第一条 TLS 记录通常是 ClientHello，记录其 length 字段，
+        # 用于判定是否超过 1455 字节（中间盒/MTU 视角的“分包”判据）。
+        record_len = None
+        if len(stream) >= 5 and stream[0] == 0x16 and stream[1] == 0x03:
+            record_len = struct.unpack("!H", stream[3:5])[0]
         for htype, body in parse_handshake_messages(stream):
-            if htype == 1 and result["client_hello"] is None:
+            if htype == 1:
                 ch = parse_client_hello(body)
                 if ch:
                     ch["from"] = "%s:%d -> %s:%d" % key
-                    result["client_hello"] = ch
+                    ch["record_len"] = record_len
+                    ch["conn"] = (key[0], key[1])  # (客户端IP, 客户端端口)
+                    result["client_hellos"].append(ch)
+                    if result["client_hello"] is None:
+                        result["client_hello"] = ch
             elif htype == 2:
                 sh = parse_server_hello(body)
                 if sh:
                     sh["from"] = "%s:%d -> %s:%d" % key
+                    sh["conn"] = (key[2], key[3])  # (客户端IP, 客户端端口)
                     result["server_hellos"].append(sh)
                     if not sh["is_hello_retry_request"] and result["server_hello"] is None:
                         result["server_hello"] = sh
@@ -454,6 +467,10 @@ def main():
           % (", ".join(version_name(v) for v in ch["supported_versions"]) or "未携带"))
     print("  密码套件数: %d（首个: %s）" % (len(ch["cipher_suites"]),
                                       "0x%04x" % ch["cipher_suites"][0] if ch["cipher_suites"] else "-"))
+    if ch.get("record_len"):
+        rl = ch["record_len"]
+        print("  ClientHello 记录长度: %d 字节（%s1455，%s）"
+              % (rl, ">" if rl > 1455 else "≤", "分包" if rl > 1455 else "不分包"))
     print("  supported_groups(%d 个):" % len(ch["supported_groups"]))
     for gid in ch["supported_groups"]:
         print("    - 0x%04x  %s" % (gid, group_name(gid)))
@@ -468,8 +485,22 @@ def main():
     if not ch["has_key_share_ext"]:
         print("  ⚠️  ClientHello 未携带 key_share 扩展")
 
+    # 同一端口上可能混有其它客户端/进程的连接（例如本机并行的其它测试）。
+    # 指定 --expect 时，只校验“ClientHello 确实提供了期望组”的那些连接，
+    # 其余连接标注后忽略，避免无关流量把用例判成失败。
+    expect_streams = set()
+    if args.expect:
+        for c in r["client_hellos"]:
+            offered = [group_name(g) for g in c["supported_groups"]]
+            offered += [group_name(g) for g, _ in c["key_shares"]]
+            if args.expect in offered:
+                expect_streams.add(c["conn"])
+    ignored = 0
     print("\n【ServerHello】共 %d 条（含 HRR）" % len(r["server_hellos"]))
     for i, s in enumerate(r["server_hellos"], 1):
+        if args.expect and expect_streams and s["conn"] not in expect_streams:
+            ignored += 1
+            continue
         tag = "HelloRetryRequest" if s["is_hello_retry_request"] else "ServerHello"
         print("  #%d %s  来自 %s" % (i, tag, s["from"]))
         print("      legacy_version=%s  选中版本=%s  cipher_suite=%s"
@@ -488,6 +519,8 @@ def main():
                 elif args.expect:
                     print("     ✅ 协商组符合预期: %s" % args.expect)
 
+    if ignored:
+        print("\n  ℹ️  已忽略 %d 条与该端口上其它客户端/进程相关的 ServerHello" % ignored)
     if sh:
         gid = sh["key_share"][0] if sh["key_share"] else None
         print("\n【结论】客户端共 offer %d 组，最终协商: %s"

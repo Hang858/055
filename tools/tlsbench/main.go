@@ -33,6 +33,8 @@ import (
 )
 
 var kexByName = map[string]tls.CurveID{
+	"SM2MLKEM512":            tls.SM2MLKEM512,
+	"SM2MLKEM1024":           tls.SM2MLKEM1024,
 	"SM2Kyber512Draft00":     tls.SM2Kyber512Draft00,
 	"SM2Kyber768Draft00":     tls.SM2Kyber768Draft00,
 	"SM2Kyber1024Draft00":    tls.SM2Kyber1024Draft00,
@@ -55,6 +57,8 @@ var kexByName = map[string]tls.CurveID{
 }
 
 var kexDisplayName = map[tls.CurveID]string{
+	tls.SM2MLKEM512:            "SM2MLKEM512",
+	tls.SM2MLKEM1024:           "SM2MLKEM1024",
 	tls.SM2Kyber512Draft00:     "SM2Kyber512Draft00",
 	tls.SM2Kyber768Draft00:     "SM2Kyber768Draft00",
 	tls.SM2Kyber1024Draft00:    "SM2Kyber1024Draft00",
@@ -71,6 +75,8 @@ var kexDisplayName = map[tls.CurveID]string{
 
 var supportedKEX = func() []tls.CurveID {
 	list := []tls.CurveID{
+		tls.SM2MLKEM512,
+		tls.SM2MLKEM1024,
 		tls.SM2Kyber512Draft00,
 		tls.X25519Kyber512Draft00,
 		tls.X25519Kyber1024Draft00,
@@ -78,12 +84,12 @@ var supportedKEX = func() []tls.CurveID {
 		tls.X25519Kyber768Draft00,
 	}
 	if tls.HQCEnabled() {
-		list = append(list, tls.X25519HQC128, tls.X25519HQC256)
+		list = append(list, tls.X25519HQC128, tls.X25519HQC256, tls.SM2HQC128, tls.SM2HQC256)
 	}
 	return append(list, tls.X25519)
 }()
 
-const kexHelp = "SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber768Draft00、" +
+const kexHelp = "SM2MLKEM512、SM2MLKEM1024、SM2Kyber512Draft00、X25519Kyber512Draft00、X25519Kyber768Draft00、" +
 	"SM2Kyber1024Draft00、X25519Kyber1024Draft00、X25519HQC-128、X25519HQC-256、X25519"
 
 func selectKEX(spec string) []tls.CurveID {

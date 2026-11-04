@@ -121,6 +121,10 @@ var kexFlag = flag.String("kex", "", "启用的密钥交换组，可用逗号分
 var certFlag = flag.String("cert", "./server_root_cert1.pem", "服务端证书文件")
 var keyFlag = flag.String("key", "./server_root_key1.pem", "服务端私钥文件")
 
+// addrFlag 指定监听地址。默认 :8080（所有网卡）；跨机测试或同一主机并存多个
+// 不同组配置的端点时，用 -addr :8082 等方式区分。
+var addrFlag = flag.String("addr", ":8080", "监听地址")
+
 // kexByName 组名 → CurveID。DummyKex(0xfe33) 是预留给 HelloRetryRequest 测试的
 // “服务端不会支持”的组：客户端把它放在首位、同时 supported_groups 里保留 X25519，
 // 即可让服务端回 HRR（见 docs/TLS测试-用例执行步骤.md 的 TLS-1-8）。
@@ -235,11 +239,11 @@ func main() {
 
 	http.HandleFunc("/", handler)
 	server := &http.Server{
-		Addr:      ":8080",
+		Addr:      *addrFlag,
 		TLSConfig: config,
 	}
 
-	log.Println("Starting HTTPS server on :8080")
+	log.Printf("Starting HTTPS server on %s", *addrFlag)
 	err := server.ListenAndServeTLS(*certFlag, *keyFlag)
 	if err != nil {
 		log.Fatalf("Server failed: %v", err)

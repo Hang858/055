@@ -48,3 +48,20 @@ coverage.out
 # Python 缓存
 __pycache__/
 *.pyc
+
+# TLS 测试脚本运行产物（抓包与日志，不入库）
+/tls-test-scripts/results-client*/
+/tls-test-scripts/endpoints/
+/tls-test-scripts/results/
+
+# gateway 版测试运行产物
+/tls-test-scripts-gateway/results/
+
+# 本机测试截图/日志产物
+/tools/evidence-png-*/
+/tools/evidence/
+
+# 编辑器 / 进程临时文件
+.vscode/
+*.pid
+/image.png
