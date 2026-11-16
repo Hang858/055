@@ -2,7 +2,7 @@
 //
 // This is a standalone two-message protocol following the message flow in
 // Fig. 2 and Fig. 3: one side uses a static KEM certificate, the other uses a
-// static signature certificate.  It is intentionally separate from crypto/tls
+// static signature public key from the pqsig registry.  It is intentionally separate from crypto/tls
 // so the message flow and key schedule can be tested without the TLS 1.3
 // certificate/CertificateVerify ordering constraints.
 package main
@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"crypto/myx509"
+
+	pqsig "pqsig"
 
 	"github.com/cloudflare/circl/kem/kyber/kyber768"
 )
@@ -60,12 +62,19 @@ type secureMsg struct {
 }
 
 type config struct {
-	mode     string
-	cert     string
-	peerCert string
-	sigKey   string
-	kemKey   string
-	timeout  time.Duration
+	mode       string
+	cert       string
+	peerCert   string
+	sigAlgName string
+	sigKey     string
+	peerSigPub string
+	kemKey     string
+	timeout    time.Duration
+
+	sigAlg  pqsig.Algorithm
+	sigPriv *pqsig.PrivateKey
+	sigPub  *pqsig.PublicKey
+	peerSig *pqsig.PublicKey
 }
 
 func main() {
@@ -75,7 +84,9 @@ func main() {
 	connect := flag.String("connect", "127.0.0.1:9443", "client connect address")
 	cert := flag.String("cert", "", "own leaf certificate (PEM)")
 	peerCert := flag.String("peer-cert", "", "peer leaf certificate (PEM)")
-	sigKey := flag.String("sig-key", "", "own Dilithium2 private key (when this side is SIG)")
+	sigAlgName := flag.String("sig-alg", "Dilithium2", "signature algorithm (Dilithium2/3/5 or SLH-DSA-SHA2-*)")
+	sigKey := flag.String("sig-key", "", "own raw signature private key (when this side is SIG)")
+	peerSigPub := flag.String("peer-sig-pub", "", "peer raw signature public key (when the peer is SIG)")
 	kemKey := flag.String("kem-key", "", "own Kyber768 private key (when this side is KEM)")
 	timeout := flag.Duration("timeout", 15*time.Second, "connection timeout")
 	flag.Parse()
@@ -83,10 +94,7 @@ func main() {
 	if *mode != modeKEMSIG && *mode != modeSIGKEM {
 		fatal("mode must be kemsig or sigkem")
 	}
-	cfg := config{mode: *mode, cert: *cert, peerCert: *peerCert, sigKey: *sigKey, kemKey: *kemKey, timeout: *timeout}
-	if cfg.cert == "" || cfg.peerCert == "" {
-		fatal("-cert and -peer-cert are required")
-	}
+	cfg := config{mode: *mode, cert: *cert, peerCert: *peerCert, sigAlgName: *sigAlgName, sigKey: *sigKey, peerSigPub: *peerSigPub, kemKey: *kemKey, timeout: *timeout}
 
 	if *server {
 		ln, err := net.Listen("tcp", *listen)
@@ -120,17 +128,6 @@ func main() {
 }
 
 func runServer(conn net.Conn, cfg config) error {
-	ownCert, err := loadCert(cfg.cert)
-	if err != nil {
-		return fmt.Errorf("load own cert: %w", err)
-	}
-	peerCert, err := loadCert(cfg.peerCert)
-	if err != nil {
-		return fmt.Errorf("load peer cert: %w", err)
-	}
-	cc := certHash(peerCert) // client certificate
-	sc := certHash(ownCert)  // server certificate
-
 	var ch clientHello
 	if err := recvJSON(conn, &ch); err != nil {
 		return err
@@ -141,41 +138,111 @@ func runServer(conn net.Conn, cfg config) error {
 
 	switch cfg.mode {
 	case modeKEMSIG:
+		// Server is the SIG side; peer is the KEM side.
+		peerCert, err := loadCert(cfg.peerCert)
+		if err != nil {
+			return fmt.Errorf("load peer KEM cert: %w", err)
+		}
+		if err := cfg.loadOwnSig(); err != nil {
+			return err
+		}
+		cc := certID(peerCert)
+		sc := sigID(cfg.sigAlg, cfg.sigPub)
 		return serverKEMSIG(conn, cfg, peerCert, cc, sc, &ch)
 	case modeSIGKEM:
-		return serverSIGKEM(conn, cfg, peerCert, cc, sc, &ch)
+		// Server is the KEM side; peer is the SIG side.
+		ownCert, err := loadCert(cfg.cert)
+		if err != nil {
+			return fmt.Errorf("load own KEM cert: %w", err)
+		}
+		if err := cfg.loadPeerSig(); err != nil {
+			return err
+		}
+		cc := sigID(cfg.sigAlg, cfg.peerSig)
+		sc := certID(ownCert)
+		return serverSIGKEM(conn, cfg, cc, sc, &ch)
 	default:
 		return fmt.Errorf("unsupported mode %q", cfg.mode)
 	}
 }
 
 func runClient(conn net.Conn, cfg config) error {
-	ownCert, err := loadCert(cfg.cert)
-	if err != nil {
-		return fmt.Errorf("load own cert: %w", err)
-	}
-	peerCert, err := loadCert(cfg.peerCert)
-	if err != nil {
-		return fmt.Errorf("load peer cert: %w", err)
-	}
-	cc := certHash(ownCert)  // client certificate
-	sc := certHash(peerCert) // server certificate
-
 	switch cfg.mode {
 	case modeKEMSIG:
-		return clientKEMSIG(conn, cfg, peerCert, cc, sc)
+		// Client is the KEM side; peer is the SIG side.
+		ownCert, err := loadCert(cfg.cert)
+		if err != nil {
+			return fmt.Errorf("load own KEM cert: %w", err)
+		}
+		if err := cfg.loadPeerSig(); err != nil {
+			return err
+		}
+		cc := certID(ownCert)
+		sc := sigID(cfg.sigAlg, cfg.peerSig)
+		return clientKEMSIG(conn, cfg, cc, sc)
 	case modeSIGKEM:
+		// Client is the SIG side; peer is the KEM side.
+		peerCert, err := loadCert(cfg.peerCert)
+		if err != nil {
+			return fmt.Errorf("load peer KEM cert: %w", err)
+		}
+		if err := cfg.loadOwnSig(); err != nil {
+			return err
+		}
+		cc := sigID(cfg.sigAlg, cfg.sigPub)
+		sc := certID(peerCert)
 		return clientSIGKEM(conn, cfg, peerCert, cc, sc)
 	default:
 		return fmt.Errorf("unsupported mode %q", cfg.mode)
 	}
 }
 
+func (c *config) loadOwnSig() error {
+	if c.sigKey == "" {
+		return errors.New("-sig-key is required on the SIG side")
+	}
+	alg, ok := pqsig.ByName(c.sigAlgName)
+	if !ok {
+		return fmt.Errorf("unknown signature algorithm %q", c.sigAlgName)
+	}
+	raw, err := os.ReadFile(c.sigKey)
+	if err != nil {
+		return fmt.Errorf("read signature private key: %w", err)
+	}
+	priv, err := alg.ParsePrivateKey(raw)
+	if err != nil {
+		return err
+	}
+	pub, err := priv.Public()
+	if err != nil {
+		return err
+	}
+	c.sigAlg, c.sigPriv, c.sigPub = alg, priv, pub
+	return nil
+}
+
+func (c *config) loadPeerSig() error {
+	alg, ok := pqsig.ByName(c.sigAlgName)
+	if !ok {
+		return fmt.Errorf("unknown signature algorithm %q", c.sigAlgName)
+	}
+	if c.peerSigPub == "" {
+		return errors.New("-peer-sig-pub is required when the peer is SIG")
+	}
+	raw, err := os.ReadFile(c.peerSigPub)
+	if err != nil {
+		return fmt.Errorf("read peer signature public key: %w", err)
+	}
+	pub, err := alg.ParsePublicKey(raw)
+	if err != nil {
+		return err
+	}
+	c.sigAlg, c.peerSig = alg, pub
+	return nil
+}
+
 // serverKEMSIG: server has the SIG identity, peer (client) has the KEM identity.
 func serverKEMSIG(conn net.Conn, cfg config, peerCert *x509.Certificate, cc, sc []byte, ch *clientHello) error {
-	if cfg.sigKey == "" {
-		return errors.New("-sig-key is required for KEM-SIG server")
-	}
 	if len(ch.EphemeralPK) == 0 {
 		return errors.New("missing ephemeral KEM public key")
 	}
@@ -195,7 +262,7 @@ func serverKEMSIG(conn net.Conn, cfg config, peerCert *x509.Certificate, cc, sc 
 	}
 
 	ctx := contextBytes(modeKEMSIG, cc, sc, ch.EphemeralPK, ctEph, ctStatic)
-	sig, err := myx509.QuantumSignWithLocalKey(ctx, cfg.sigKey)
+	sig, err := cfg.sigAlg.Sign(cfg.sigPriv, ctx)
 	if err != nil {
 		return fmt.Errorf("sign server hello: %w", err)
 	}
@@ -220,7 +287,7 @@ func serverKEMSIG(conn net.Conn, cfg config, peerCert *x509.Certificate, cc, sc 
 }
 
 // clientKEMSIG: client has the KEM identity, peer (server) has the SIG identity.
-func clientKEMSIG(conn net.Conn, cfg config, peerCert *x509.Certificate, cc, sc []byte) error {
+func clientKEMSIG(conn net.Conn, cfg config, cc, sc []byte) error {
 	if cfg.kemKey == "" {
 		return errors.New("-kem-key is required for KEM-SIG client")
 	}
@@ -242,12 +309,8 @@ func clientKEMSIG(conn net.Conn, cfg config, peerCert *x509.Certificate, cc, sc 
 		return err
 	}
 	ctx := contextBytes(modeKEMSIG, cc, sc, ephBytes, sh.EphemeralCiphertext, sh.StaticCiphertext)
-	ok, err := myx509.VerifyQuantumSignatureFromCert(peerCert, ctx, sh.Signature)
-	if err != nil {
+	if err := cfg.sigAlg.Verify(cfg.peerSig, ctx, sh.Signature); err != nil {
 		return fmt.Errorf("verify server signature: %w", err)
-	}
-	if !ok {
-		return errors.New("server signature invalid")
 	}
 	ssEph, err := scheme.Decapsulate(ephPriv, sh.EphemeralCiphertext)
 	if err != nil {
@@ -269,7 +332,7 @@ func clientKEMSIG(conn net.Conn, cfg config, peerCert *x509.Certificate, cc, sc 
 }
 
 // serverSIGKEM: server has the KEM identity, peer (client) has the SIG identity.
-func serverSIGKEM(conn net.Conn, cfg config, peerCert *x509.Certificate, cc, sc []byte, ch *clientHello) error {
+func serverSIGKEM(conn net.Conn, cfg config, cc, sc []byte, ch *clientHello) error {
 	if cfg.kemKey == "" {
 		return errors.New("-kem-key is required for SIG-KEM server")
 	}
@@ -278,12 +341,8 @@ func serverSIGKEM(conn net.Conn, cfg config, peerCert *x509.Certificate, cc, sc 
 	}
 	// Signature covers pk_tilde || c_R; c_tilde is not known yet.
 	sigCtx := contextBytes(modeSIGKEM, cc, sc, ch.EphemeralPK, nil, ch.StaticCiphertext)
-	ok, err := myx509.VerifyQuantumSignatureFromCert(peerCert, sigCtx, ch.Signature)
-	if err != nil {
+	if err := cfg.sigAlg.Verify(cfg.peerSig, sigCtx, ch.Signature); err != nil {
 		return fmt.Errorf("verify client signature: %w", err)
-	}
-	if !ok {
-		return errors.New("client signature invalid")
 	}
 	// Missing/wrong server KEM private key must fail here.
 	ssStatic, err := myx509.QuantumDecryptionWithLocalKey(ch.StaticCiphertext, cfg.kemKey)
@@ -338,7 +397,7 @@ func clientSIGKEM(conn net.Conn, cfg config, peerCert *x509.Certificate, cc, sc 
 		return fmt.Errorf("encapsulate to server KEM certificate: %w", err)
 	}
 	sigCtx := contextBytes(modeSIGKEM, cc, sc, ephBytes, nil, ctStatic)
-	sig, err := myx509.QuantumSignWithLocalKey(sigCtx, cfg.sigKey)
+	sig, err := cfg.sigAlg.Sign(cfg.sigPriv, sigCtx)
 	if err != nil {
 		return fmt.Errorf("sign client hello: %w", err)
 	}
@@ -496,9 +555,20 @@ func loadCert(path string) (*x509.Certificate, error) {
 	return x509.ParseCertificate(block.Bytes)
 }
 
-func certHash(cert *x509.Certificate) []byte {
-	h := sha256.Sum256(cert.Raw)
-	return h[:]
+func certID(cert *x509.Certificate) []byte {
+	h := sha256.New()
+	h.Write([]byte("kem-cert:"))
+	h.Write(cert.Raw)
+	return h.Sum(nil)
+}
+
+func sigID(alg pqsig.Algorithm, pub *pqsig.PublicKey) []byte {
+	h := sha256.New()
+	h.Write([]byte("sig:"))
+	h.Write([]byte(alg.Name()))
+	h.Write([]byte(":"))
+	h.Write(pub.Raw)
+	return h.Sum(nil)
 }
 
 func sendJSON(w io.Writer, v any) error {
