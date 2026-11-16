@@ -63,7 +63,9 @@ PASS: TestRegistryHasAllAlgorithms
 PASS: TestSignVerifyAllAlgorithms (9 个子测试)
 PASS: TestKeyRoundTrip
 PASS: TestAlgorithmExtensionRoundTrip
-ok  	pqsig	2.602s
+PASS: TestTLSSignatureCodes
+PASS: TestCertificateVerifyInput
+PASS: TestSignAllTLSSignatureLevels（9 个子测试）
 ```
 
 ## 证书扩展
@@ -81,6 +83,31 @@ alg, err := pqsig.DecodeAlgorithmExtension(der)
 ```
 
 后续给 `myx509` 打补丁时，用这个扩展区分 Dilithium2 和六档 SLH-DSA；没有扩展时按旧行为默认 Dilithium2。
+
+
+## TLS 签名档
+
+`tls.go` 为九个签名算法分配了项目私有 TLS SignatureScheme，并实现了 TLS 1.3 CertificateVerify 的签名输入：
+
+```text
+Dilithium2          0xFE01
+Dilithium3          0xFE02
+Dilithium5          0xFE03
+SLH-DSA-SHA2-128s   0xFE10
+SLH-DSA-SHA2-128f   0xFE11
+SLH-DSA-SHA2-192s   0xFE12
+SLH-DSA-SHA2-192f   0xFE13
+SLH-DSA-SHA2-256s   0xFE14
+SLH-DSA-SHA2-256f   0xFE15
+```
+
+```go
+input := pqsig.CertificateVerifyInput("TLS 1.3, server CertificateVerify", transcriptHash)
+sig, _ := alg.Sign(kp.Private, input)
+err := alg.Verify(kp.Public, input, sig)
+```
+
+这些码点目前只是项目私有值，必须和 patched `crypto/tls` 里的常量保持一致；标准 TLS 没有这些 SLH-DSA 码点。
 
 ## 下一步
 
