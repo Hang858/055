@@ -32,19 +32,13 @@ func loadServerCertificate() (tls.Certificate, error) {
 		return tls.Certificate{}, fmt.Errorf("read end-entity.pem: %w", err)
 	}
 
-	// 中间证书
-	inter1PEM, err := os.ReadFile("pqcerts/intermediate1-ca.pem")
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("read intermediate1-ca.pem: %w", err)
+	// 中间证书可选；实验室证书链可以直接是 root -> leaf。
+	fullChainPEM := append([]byte(nil), endEntityCertPEM...)
+	for _, name := range []string{"pqcerts/intermediate1-ca.pem", "pqcerts/intermediate2-ca.pem"} {
+		if data, err := os.ReadFile(name); err == nil {
+			fullChainPEM = append(fullChainPEM, data...)
+		}
 	}
-	inter2PEM, err := os.ReadFile("pqcerts/intermediate2-ca.pem")
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("read intermediate2-ca.pem: %w", err)
-	}
-
-	// 将 leaf + 中间证书拼成一份 PEM，形成完整证书链
-	fullChainPEM := append(endEntityCertPEM, inter1PEM...)
-	fullChainPEM = append(fullChainPEM, inter2PEM...)
 
 	// 私钥
 	keyPEM, err := os.ReadFile("pqcerts/end-entity-key.pem")
@@ -82,6 +76,8 @@ func main() {
 		//ProtocolType:       tls.QuantumSupportAKEX,
 		ProtocolType:       tls.QuantumSupportAKEX,
 		ProtocolTypeStrict: 0, // 👈 这里表示是不是强制需要执行这个协议版本
+		KEMTLSSigAlg:       os.Getenv("KEMTLS_SIG_ALG"),
+		KEMTLSSigKey:       os.Getenv("KEMTLS_SIG_KEY"),
 	}
 
 	// 使用 TLS 监听

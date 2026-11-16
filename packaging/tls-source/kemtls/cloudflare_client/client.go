@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -32,18 +33,13 @@ func loadClientCertificate() (tls.Certificate, error) {
 		return tls.Certificate{}, fmt.Errorf("read end-entity.pem: %w", err)
 	}
 
-	// ✅ 客户端证书链的中间证书（按你实际链替换/增减）
-	inter1PEM, err := os.ReadFile("pqcerts/intermediate1-ca.pem")
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("read intermediate1-ca.pem: %w", err)
+	// 中间证书可选；实验室证书链可以直接是 root -> leaf。
+	fullChainPEM := append([]byte(nil), endEntityCertPEM...)
+	for _, name := range []string{"pqcerts/intermediate1-ca.pem", "pqcerts/intermediate2-ca.pem"} {
+		if data, err := os.ReadFile(name); err == nil {
+			fullChainPEM = append(fullChainPEM, data...)
+		}
 	}
-	inter2PEM, err := os.ReadFile("pqcerts/intermediate2-ca.pem")
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("read intermediate2-ca.pem: %w", err)
-	}
-
-	fullChainPEM := append(endEntityCertPEM, inter1PEM...)
-	fullChainPEM = append(fullChainPEM, inter2PEM...)
 
 	// ✅ 客户端私钥
 	keyPEM, err := os.ReadFile("pqcerts/end-entity-key.pem")
@@ -98,7 +94,13 @@ func main() {
 	var min time.Duration = time.Hour // 初始设为非常大
 	var max time.Duration
 
-	for i := 0; i < 100; i++ {
+	conns := 100
+	if v := os.Getenv("KEMTLS_CONNECTIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			conns = n
+		}
+	}
+	for i := 0; i < conns; i++ {
 		start := time.Now()
 
 		conn, err := tls.Dial("tcp", "localhost:8443", tlsConfig)

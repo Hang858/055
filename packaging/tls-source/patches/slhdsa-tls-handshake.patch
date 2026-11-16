@@ -1,0 +1,492 @@
+--- a/src/crypto/tls/common.go
++++ b/src/crypto/tls/common.go
+@@ -452,6 +452,16 @@
+ 
+ 	// Post-Quantum Dilithium algorithm
+ 	DILITHIUM2withSHA512 SignatureScheme = 0xFE01
++	DILITHIUM3withSHA512 SignatureScheme = 0xFE02
++	DILITHIUM5withSHA512 SignatureScheme = 0xFE03
++
++	// Post-Quantum SLH-DSA algorithms (project-private TLS code points).
++	SLHDSASHA2_128s SignatureScheme = 0xFE10
++	SLHDSASHA2_128f SignatureScheme = 0xFE11
++	SLHDSASHA2_192s SignatureScheme = 0xFE12
++	SLHDSASHA2_192f SignatureScheme = 0xFE13
++	SLHDSASHA2_256s SignatureScheme = 0xFE14
++	SLHDSASHA2_256f SignatureScheme = 0xFE15
+ 
+ 	// EdDSA algorithms.
+ 	Ed25519 SignatureScheme = 0x0807
+@@ -463,7 +473,73 @@
+ 
+ // IsDilithiumScheme returns true if the signature scheme is Dilithium.
+ func IsDilithiumScheme(scheme SignatureScheme) bool {
+-	return scheme == DILITHIUM2withSHA512
++	switch scheme {
++	case DILITHIUM2withSHA512, DILITHIUM3withSHA512, DILITHIUM5withSHA512:
++		return true
++	}
++	return false
++}
++
++func IsSLHDSAScheme(scheme SignatureScheme) bool {
++	switch scheme {
++	case SLHDSASHA2_128s, SLHDSASHA2_128f,
++		SLHDSASHA2_192s, SLHDSASHA2_192f,
++		SLHDSASHA2_256s, SLHDSASHA2_256f:
++		return true
++	}
++	return false
++}
++
++func IsPQSignatureScheme(scheme SignatureScheme) bool {
++	return IsDilithiumScheme(scheme) || IsSLHDSAScheme(scheme)
++}
++
++func PQSchemeName(scheme SignatureScheme) string {
++	switch scheme {
++	case DILITHIUM2withSHA512:
++		return "Dilithium2"
++	case DILITHIUM3withSHA512:
++		return "Dilithium3"
++	case DILITHIUM5withSHA512:
++		return "Dilithium5"
++	case SLHDSASHA2_128s:
++		return "SLH-DSA-SHA2-128s"
++	case SLHDSASHA2_128f:
++		return "SLH-DSA-SHA2-128f"
++	case SLHDSASHA2_192s:
++		return "SLH-DSA-SHA2-192s"
++	case SLHDSASHA2_192f:
++		return "SLH-DSA-SHA2-192f"
++	case SLHDSASHA2_256s:
++		return "SLH-DSA-SHA2-256s"
++	case SLHDSASHA2_256f:
++		return "SLH-DSA-SHA2-256f"
++	}
++	return ""
++}
++
++func PQSchemeByName(name string) (SignatureScheme, bool) {
++	switch name {
++	case "Dilithium2":
++		return DILITHIUM2withSHA512, true
++	case "Dilithium3":
++		return DILITHIUM3withSHA512, true
++	case "Dilithium5":
++		return DILITHIUM5withSHA512, true
++	case "SLH-DSA-SHA2-128s":
++		return SLHDSASHA2_128s, true
++	case "SLH-DSA-SHA2-128f":
++		return SLHDSASHA2_128f, true
++	case "SLH-DSA-SHA2-192s":
++		return SLHDSASHA2_192s, true
++	case "SLH-DSA-SHA2-192f":
++		return SLHDSASHA2_192f, true
++	case "SLH-DSA-SHA2-256s":
++		return SLHDSASHA2_256s, true
++	case "SLH-DSA-SHA2-256f":
++		return SLHDSASHA2_256f, true
++	}
++	return 0, false
+ }
+ 
+ // ClientHelloInfo contains information from a ClientHello message in order to
+@@ -937,6 +1013,12 @@
+ 	//👈 这里定义协议交互类型
+ 	ProtocolType uint16
+ 	ProtocolTypeStrict uint16
++
++	// KEMTLSSigAlg/KEMTLSSigKey select the PQ signature algorithm and raw
++	// private key for the ServerKeyGen/KEMTLS sign-certificate path. Empty
++	// values preserve the legacy Dilithium2 behavior.
++	KEMTLSSigAlg string
++	KEMTLSSigKey string
+ }
+ 
+ // EncryptedClientHelloKey holds a private key that is associated
+--- a/src/crypto/tls/auth.go
++++ b/src/crypto/tls/auth.go
+@@ -106,7 +106,8 @@
+ 		sigType = signatureECDSA
+ 	case Ed25519:
+ 		sigType = signatureEd25519
+-	case DILITHIUM2withSHA512: sigType = signatureDilithium
++	case DILITHIUM2withSHA512, DILITHIUM3withSHA512, DILITHIUM5withSHA512, SLHDSASHA2_128s, SLHDSASHA2_128f, SLHDSASHA2_192s, SLHDSASHA2_192f, SLHDSASHA2_256s, SLHDSASHA2_256f:
++		sigType = signatureDilithium
+ 	default:
+ 		return 0, 0, fmt.Errorf("unsupported signature algorithm: %v", signatureAlgorithm)
+ 	}
+@@ -117,7 +118,7 @@
+ 		hash = crypto.SHA256
+ 	case PKCS1WithSHA384, PSSWithSHA384, ECDSAWithP384AndSHA384:
+ 		hash = crypto.SHA384
+-	case PKCS1WithSHA512, PSSWithSHA512, ECDSAWithP521AndSHA512, DILITHIUM2withSHA512:
++	case PKCS1WithSHA512, PSSWithSHA512, ECDSAWithP521AndSHA512, DILITHIUM2withSHA512, DILITHIUM3withSHA512, DILITHIUM5withSHA512, SLHDSASHA2_128s, SLHDSASHA2_128f, SLHDSASHA2_192s, SLHDSASHA2_192f, SLHDSASHA2_256s, SLHDSASHA2_256f:
+ 		hash = crypto.SHA512
+ 	case Ed25519:
+ 		hash = directSigning
+--- a/src/crypto/tls/defaults.go
++++ b/src/crypto/tls/defaults.go
+@@ -43,6 +43,14 @@
+ 		PKCS1WithSHA1,
+ 		ECDSAWithSHA1,
+ 		DILITHIUM2withSHA512,
++		DILITHIUM3withSHA512,
++		DILITHIUM5withSHA512,
++		SLHDSASHA2_128s,
++		SLHDSASHA2_128f,
++		SLHDSASHA2_192s,
++		SLHDSASHA2_192f,
++		SLHDSASHA2_256s,
++		SLHDSASHA2_256f,
+ 	}
+ }
+ 
+--- a/src/crypto/tls/handshake_server.go
++++ b/src/crypto/tls/handshake_server.go
+@@ -101,6 +101,14 @@
+ 					}
+ 				}
+ 
++				if c.config.KEMTLSSigAlg != "" {
++					if scheme, ok := PQSchemeByName(c.config.KEMTLSSigAlg); ok &&
++						slices.Contains(hs.clientHello.supportedSignatureAlgorithms, scheme) {
++						hs.sigAlg = scheme
++						hs.PQverifysupport = true
++						log.Printf("✅ 配置选择抗量子签名算法: %s (0x%04x)", c.config.KEMTLSSigAlg, uint16(scheme))
++					}
++				}
+ 				fmt.Println("启用抗量子证书")
+ 			}
+ 			// 👈 这里根据client端的协议交互流程来选择自己的协议交互流程
+--- a/src/crypto/tls/handshake_server_tls13.go
++++ b/src/crypto/tls/handshake_server_tls13.go
+@@ -914,7 +914,7 @@
+ 
+ 		// 读取客户端的 PQ 密钥交换消息
+ 		log.Println("等待抗量子密文信息")
+-		msg, err := hs.c.readHandshake(nil)
++		msg, err := hs.c.readHandshake(hs.transcript)
+ 		if err != nil {
+ 			return err
+ 		}
+@@ -925,8 +925,25 @@
+ 			c.sendAlert(alertUnexpectedMessage)
+ 			return unexpectedMessageError(pqKeyExchange, msg)
+ 		}
+-		// 👈 这里需要去掉前四个byte
+-		pqKeyExchange.ciphertext = pqKeyExchange.ciphertext[4 : kyber768.CiphertextSize+4]
++		// 消息结构: [类型(1)][长度(3)][Kyber768 密文]
++		// 必须在切片前校验长度，避免畸形报文触发 panic。
++		if len(pqKeyExchange.ciphertext) != 4+kyber768.CiphertextSize {
++			c.sendAlert(alertIllegalParameter)
++			return errors.New("tls: invalid PQ client key exchange length")
++		}
++		if pqKeyExchange.ciphertext[0] != typePQClientKeyExchange {
++			c.sendAlert(alertIllegalParameter)
++			return errors.New("tls: invalid PQ client key exchange type")
++		}
++		innerLen := int(pqKeyExchange.ciphertext[1])<<16 |
++			int(pqKeyExchange.ciphertext[2])<<8 |
++			int(pqKeyExchange.ciphertext[3])
++		if innerLen != kyber768.CiphertextSize {
++			c.sendAlert(alertIllegalParameter)
++			return errors.New("tls: invalid PQ client key exchange inner length")
++		}
++		// 去掉内层 4 字节头，得到纯 Kyber768 密文。
++		pqKeyExchange.ciphertext = pqKeyExchange.ciphertext[4:]
+ 
+ 		// 使用服务器私钥解密客户端发送的密文
+ 		hs.pqSharedSecret, err = kyber768.Scheme().Decapsulate(hs.pqPrivKey, pqKeyExchange.ciphertext)
+@@ -1073,21 +1090,42 @@
+ 	sig := []byte{}
+ 	//👈 拓展抗量子认证部分，这里主要是就是去掉最后一位，观察高位的认证部分具体需要什么安全级别
+ 	if (hs.protocoltype/10)*10 == QuantumSupportSignCert {
+-		//test_data := []byte("hello")
+-		_, sigHash1, err := typeAndHashFromSignatureScheme(DILITHIUM2withSHA512)
++		algName := c.config.KEMTLSSigAlg
++		if algName == "" {
++			algName = "Dilithium2"
++		}
++		scheme := hs.sigAlg
++		if c.config.KEMTLSSigAlg != "" {
++			scheme, _ = PQSchemeByName(algName)
++		} else if scheme == 0 {
++			scheme, _ = PQSchemeByName(algName)
++		}
++		_, sigHash1, err := typeAndHashFromSignatureScheme(scheme)
+ 		if err != nil {
+ 			return c.sendAlert(alertInternalError)
+ 		}
+ 		signed1 := signedMessage(sigHash1, serverSignatureContext, hs.transcript)
+ 
+-		sig, err = myx509.QuantumSignWithLocalKey(signed1, "pqcerts/end-entity-pq-key.bin")
++		keyPath := c.config.KEMTLSSigKey
++		if keyPath == "" {
++			keyPath = "pqcerts/end-entity-pq-key.bin"
++		}
++		sig, err = myx509.QuantumSignWithLocalKeyAlg(signed1, keyPath, algName)
++		if err != nil {
++			log.Printf("SLH-DSA sign failed: %v", err)
++			return c.sendAlert(alertInternalError)
++		}
++		leaf, err := globalCertCache.newCert(hs.cert.Certificate[0])
+ 		if err != nil {
++			log.Printf("SLH-DSA leaf parse failed: %v", err)
+ 			return c.sendAlert(alertInternalError)
+ 		}
+-		if ok, errVerify := myx509.VerifyQuantumSignatureFromCertFile("pqcerts/end-entity.pem", signed1, sig); errVerify != nil || !ok {
++		if ok, errVerify := myx509.VerifyQuantumSignatureFromCertAlg(leaf, signed1, sig, algName); errVerify != nil || !ok {
++			log.Printf("SLH-DSA self verify failed: ok=%v err=%v", ok, errVerify)
+ 			return c.sendAlert(alertInternalError)
+ 		}
+-		certVerifyMsg.signatureAlgorithm = DILITHIUM2withSHA512
++		certVerifyMsg.signatureAlgorithm = scheme
++		log.Printf("PQ server CertificateVerify scheme=0x%04x alg=%s siglen=%d", uint16(scheme), algName, len(sig))
+ 	} else {
+ 		certVerifyMsg.signatureAlgorithm = hs.sigAlg
+ 		sig, err = hs.cert.PrivateKey.(crypto.Signer).Sign(c.config.rand(), signed, signOpts)
+--- a/src/crypto/tls/handshake_client_tls13.go
++++ b/src/crypto/tls/handshake_client_tls13.go
+@@ -514,7 +514,7 @@
+ 	}
+ 
+ 	// 将消息序列化并发送给服务器
+-	if _, err := hs.c.writeHandshakeRecord(pqMsg, nil); err != nil {
++	if _, err := hs.c.writeHandshakeRecord(pqMsg, hs.transcript); err != nil {
+ 		return err
+ 	}
+ 
+@@ -823,7 +823,8 @@
+ 	// include PKCS#1 v1.5 and SHA-1 if the ClientHello also supported TLS 1.2.
+ 
+ 	// 👈 这里判断是否使用了抗量子签名证书
+-	if certVerify.signatureAlgorithm == DILITHIUM2withSHA512 && (hs.serverHello.ProtocolType/10)*10 == QuantumSupportSignCert {
++	log.Printf("client CertificateVerify alg=0x%04x protocol=0x%04x pq=%v", uint16(certVerify.signatureAlgorithm), hs.serverHello.ProtocolType, IsPQSignatureScheme(certVerify.signatureAlgorithm))
++	if IsPQSignatureScheme(certVerify.signatureAlgorithm) && (hs.serverHello.ProtocolType/10)*10 == QuantumSupportSignCert {
+ 		_, sigHash, err := typeAndHashFromSignatureScheme(certVerify.signatureAlgorithm)
+ 		if err != nil {
+ 			return c.sendAlert(alertInternalError)
+@@ -849,7 +850,11 @@
+ 		//sum := hash.Sum(nil)
+ 		//fmt.Printf("XXXXXXXXXXXXXTranscript hash: %x\n", sum)
+ 		signed := signedMessage(sigHash, serverSignatureContext, hs.transcript)
+-		result1, errors1 := myx509.VerifyQuantumSignatureFromCert(certs[0], signed, certVerify.signature)
++		algName := PQSchemeName(certVerify.signatureAlgorithm)
++		if certAlg, certErr := myx509.QuantumAlgorithmFromCert(certs[0]); certErr == nil && certAlg != "" {
++			algName = certAlg
++		}
++		result1, errors1 := myx509.VerifyQuantumSignatureFromCertAlg(certs[0], signed, certVerify.signature, algName)
+ 		//result, errors := myx509.VerifyQuantumSignatureFromCertFile("pqcerts/end-entity.pem",signed,certVerify.signature)
+ 		if err := transcriptMsg(certVerify, hs.transcript); err != nil {
+ 			return err
+--- a/src/crypto/myx509/myx509.go
++++ b/src/crypto/myx509/myx509.go
+@@ -11,14 +11,17 @@
+ 	"encoding/hex"
+ 	"encoding/pem"
+ 	"fmt"
++	"github.com/cloudflare/circl/kem/kyber/kyber768"
++	mode2 "github.com/cloudflare/circl/sign/dilithium/mode2"
++	"github.com/cloudflare/circl/sign/dilithium/mode3"
++	"github.com/cloudflare/circl/sign/dilithium/mode5"
++	"github.com/cloudflare/circl/sign/slhdsa"
+ 	"log"
+ 	"math/big"
+ 	"os"
+ 	"path/filepath"
+ 	"strings"
+ 	"time"
+-	"github.com/cloudflare/circl/kem/kyber/kyber768"
+-	mode2 "github.com/cloudflare/circl/sign/dilithium/mode2"
+ )
+ 
+ // 定义抗量子算法相关的OID（示例）
+@@ -27,8 +30,23 @@
+ 	OIDQuantumKEMPublicKey = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 1, 0}
+ 	OIDQuantumSIGPublicKey = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 1, 1}
+ 	OIDQuantumSignature    = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 1, 2}
++	// OIDQuantumAlgorithm tags the PQ signature algorithm for a certificate.
++	// Older certificates do not carry it and default to Dilithium2.
++	OIDQuantumAlgorithm = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 1, 3}
+ )
+ 
++var pqSigAlgOIDs = map[string]asn1.ObjectIdentifier{
++	"Dilithium2":        {1, 3, 6, 1, 4, 1, 54321, 21, 1},
++	"Dilithium3":        {1, 3, 6, 1, 4, 1, 54321, 21, 2},
++	"Dilithium5":        {1, 3, 6, 1, 4, 1, 54321, 21, 3},
++	"SLH-DSA-SHA2-128s": {2, 16, 840, 1, 101, 3, 4, 3, 20},
++	"SLH-DSA-SHA2-128f": {2, 16, 840, 1, 101, 3, 4, 3, 21},
++	"SLH-DSA-SHA2-192s": {2, 16, 840, 1, 101, 3, 4, 3, 22},
++	"SLH-DSA-SHA2-192f": {2, 16, 840, 1, 101, 3, 4, 3, 23},
++	"SLH-DSA-SHA2-256s": {2, 16, 840, 1, 101, 3, 4, 3, 24},
++	"SLH-DSA-SHA2-256f": {2, 16, 840, 1, 101, 3, 4, 3, 25},
++}
++
+ // 使用 Dilithium2（mode2）
+ var dilithiumName = "Dilithium2"
+ 
+@@ -2015,6 +2033,155 @@
+ 	return nil, fmt.Errorf("证书中未找到抗量子公钥扩展")
+ }
+ 
++// QuantumAlgorithmFromCert returns the PQ signature algorithm name stored in
++// the certificate's algorithm extension. Legacy certificates default to
++// Dilithium2.
++func pqSignWithAlg(algName string, raw, data []byte) ([]byte, error) {
++	switch algName {
++	case "Dilithium2":
++		var sk mode2.PrivateKey
++		if err := sk.UnmarshalBinary(raw); err != nil {
++			return nil, err
++		}
++		sig := make([]byte, mode2.SignatureSize)
++		mode2.SignTo(&sk, data, sig)
++		return sig, nil
++	case "Dilithium3":
++		var sk mode3.PrivateKey
++		if err := sk.UnmarshalBinary(raw); err != nil {
++			return nil, err
++		}
++		sig := make([]byte, mode3.SignatureSize)
++		mode3.SignTo(&sk, data, sig)
++		return sig, nil
++	case "Dilithium5":
++		var sk mode5.PrivateKey
++		if err := sk.UnmarshalBinary(raw); err != nil {
++			return nil, err
++		}
++		sig := make([]byte, mode5.SignatureSize)
++		mode5.SignTo(&sk, data, sig)
++		return sig, nil
++	}
++	id, err := slhdsa.IDByName(algName)
++	if err != nil {
++		return nil, err
++	}
++	scheme := id.Scheme()
++	sk, err := scheme.UnmarshalBinaryPrivateKey(raw)
++	if err != nil {
++		return nil, err
++	}
++	sig := scheme.Sign(sk, data, nil)
++	if len(sig) != scheme.SignatureSize() {
++		return nil, fmt.Errorf("SLH-DSA 签名长度异常: %d", len(sig))
++	}
++	return sig, nil
++}
++
++func pqVerifyWithAlg(algName string, raw, data, sig []byte) (bool, error) {
++	switch algName {
++	case "Dilithium2":
++		var pk mode2.PublicKey
++		if err := pk.UnmarshalBinary(raw); err != nil {
++			return false, err
++		}
++		return mode2.Verify(&pk, data, sig), nil
++	case "Dilithium3":
++		var pk mode3.PublicKey
++		if err := pk.UnmarshalBinary(raw); err != nil {
++			return false, err
++		}
++		return mode3.Verify(&pk, data, sig), nil
++	case "Dilithium5":
++		var pk mode5.PublicKey
++		if err := pk.UnmarshalBinary(raw); err != nil {
++			return false, err
++		}
++		return mode5.Verify(&pk, data, sig), nil
++	}
++	id, err := slhdsa.IDByName(algName)
++	if err != nil {
++		return false, err
++	}
++	scheme := id.Scheme()
++	pk, err := scheme.UnmarshalBinaryPublicKey(raw)
++	if err != nil {
++		return false, err
++	}
++	return scheme.Verify(pk, data, sig, nil), nil
++}
++
++func QuantumAlgorithmFromCert(cert *x509.Certificate) (string, error) {
++	for _, ext := range cert.Extensions {
++		if !ext.Id.Equal(OIDQuantumAlgorithm) {
++			continue
++		}
++		var oid asn1.ObjectIdentifier
++		if rest, err := asn1.Unmarshal(ext.Value, &oid); err != nil || len(rest) != 0 {
++			return "", fmt.Errorf("解析抗量子算法扩展失败")
++		}
++		for name, want := range pqSigAlgOIDs {
++			if oid.Equal(want) {
++				return name, nil
++			}
++		}
++		return "", fmt.Errorf("未知抗量子算法 OID: %s", oid)
++	}
++	return "Dilithium2", nil
++}
++
++// QuantumSignWithLocalKeyAlg signs data with the named PQ signature algorithm.
++func QuantumSignWithLocalKeyAlg(data []byte, keyType, algName string) ([]byte, error) {
++	if algName == "" {
++		algName = "Dilithium2"
++	}
++	raw, err := os.ReadFile(keyType)
++	if err != nil {
++		return nil, fmt.Errorf("读取抗量子私钥文件失败: %v", err)
++	}
++	sig, err := pqSignWithAlg(algName, raw, data)
++	if err != nil {
++		return nil, fmt.Errorf("抗量子签名失败: %v", err)
++	}
++	log.Printf("抗量子私钥已加载: %s, 算法: %s", keyType, algName)
++	log.Printf("✅ 使用 %s 抗量子私钥签名成功，签名大小: %d 字节", keyType, len(sig))
++	return append([]byte(nil), sig...), nil
++}
++
++// VerifyQuantumSignatureFromCertAlg verifies with the named PQ algorithm. If
++// algName is empty, the algorithm extension on the certificate is used.
++func VerifyQuantumSignatureFromCertAlg(cert *x509.Certificate, data, signature []byte, algName string) (bool, error) {
++	if cert == nil {
++		return false, fmt.Errorf("证书为空")
++	}
++	if algName == "" {
++		var err error
++		algName, err = QuantumAlgorithmFromCert(cert)
++		if err != nil {
++			return false, err
++		}
++	}
++	var raw []byte
++	for _, ext := range cert.Extensions {
++		if ext.Id.Equal(OIDQuantumSIGPublicKey) {
++			raw = ext.Value
++			break
++		}
++	}
++	if len(raw) == 0 {
++		return false, fmt.Errorf("证书中未找到抗量子公钥扩展")
++	}
++	ok, err := pqVerifyWithAlg(algName, raw, data, signature)
++	if err != nil {
++		return false, fmt.Errorf("抗量子签名验证失败: %v", err)
++	}
++	if !ok {
++		return false, fmt.Errorf("抗量子签名验证失败")
++	}
++	return true, nil
++}
++
+ // VerifyQuantumSignatureFromCertFile 从证书文件加载证书并验证签名
+ // 参数：
+ //
+@@ -2134,4 +2301,4 @@
+ 		fmt.Printf("   诊断: ❌ 新签名也验证失败 - 密钥对不匹配!\n")
+ 		fmt.Printf("   诊断: 证书中的公钥与这个私钥不是同一对\n")
+ 	}
+-}
+\ 文件末尾没有换行符
++}
