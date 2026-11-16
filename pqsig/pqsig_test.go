@@ -91,6 +91,13 @@ func TestKeyRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		derived, err := kp.Private.Public()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(derived.Raw, pub.Raw) {
+			t.Fatalf("%s derived public key mismatch", name)
+		}
 		if !bytes.Equal(pub.Raw, kp.Public.Raw) {
 			t.Fatalf("%s public key round trip mismatch", name)
 		}

@@ -86,6 +86,27 @@ type PrivateKey struct {
 func (k *PublicKey) CryptoPublicKey() crypto.PublicKey { return k.key }
 func (k *PrivateKey) CryptoSigner() crypto.Signer      { return k.key }
 
+// Public derives the public key from a private key. It is useful when the
+// caller only has a raw private key file and needs the identity/public value.
+func (k *PrivateKey) Public() (*PublicKey, error) {
+	if k == nil || k.Algorithm == nil {
+		return nil, errors.New("pqsig: nil private key")
+	}
+	signer, ok := k.key.(crypto.Signer)
+	if !ok {
+		return nil, errors.New("pqsig: private key is not a crypto.Signer")
+	}
+	pub, ok := signer.Public().(sign.PublicKey)
+	if !ok {
+		return nil, errors.New("pqsig: private key has no sign.PublicKey")
+	}
+	raw, err := pub.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	return &PublicKey{Algorithm: k.Algorithm, Raw: append([]byte(nil), raw...), key: pub}, nil
+}
+
 func (a *algorithm) GenerateKey() (*KeyPair, error) {
 	pub, priv, err := a.scheme.GenerateKey()
 	if err != nil {
