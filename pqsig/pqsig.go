@@ -17,6 +17,8 @@ import (
 
 	"github.com/cloudflare/circl/sign"
 	"github.com/cloudflare/circl/sign/dilithium/mode2"
+	"github.com/cloudflare/circl/sign/dilithium/mode3"
+	"github.com/cloudflare/circl/sign/dilithium/mode5"
 	"github.com/cloudflare/circl/sign/slhdsa"
 )
 
@@ -163,6 +165,8 @@ func register(a Algorithm) {
 // legacy private OID until the certificate extension carries an algorithm tag.
 var (
 	oidDilithium2 = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 21, 1}
+	oidDilithium3 = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 21, 2}
+	oidDilithium5 = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 21, 3}
 	// OIDAlgorithmExtension is the certificate extension carrying the PQ
 	// signature algorithm. Existing hybrid certificates use private extensions
 	// .1.0/.1.1/.1.2 for raw keys and signatures; without .1.3 a verifier cannot
@@ -185,6 +189,20 @@ func init() {
 		level:  128,
 		oid:    oidDilithium2,
 		scheme: mode2.Scheme(),
+	})
+	register(&algorithm{
+		name:   "Dilithium3",
+		family: FamilyDilithium,
+		level:  192,
+		oid:    oidDilithium3,
+		scheme: mode3.Scheme(),
+	})
+	register(&algorithm{
+		name:   "Dilithium5",
+		family: FamilyDilithium,
+		level:  256,
+		oid:    oidDilithium5,
+		scheme: mode5.Scheme(),
 	})
 	for _, name := range []string{
 		"SLH-DSA-SHA2-128s", "SLH-DSA-SHA2-128f",

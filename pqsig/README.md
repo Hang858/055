@@ -7,6 +7,8 @@ TLS、KEMTLS-lab 和证书工具共用的签名算法注册表。目标不是再
 | 名称 | 族 | 安全级别 | 公钥 | 私钥 | 签名 |
 |---|---|---:|---:|---:|---:|
 | `Dilithium2` | Dilithium | 128 | 1312 B | 2528 B | 2420 B |
+| `Dilithium3` | Dilithium | 192 | 1952 B | 4000 B | 3293 B |
+| `Dilithium5` | Dilithium | 256 | 2592 B | 4864 B | 4595 B |
 | `SLH-DSA-SHA2-128s` | SLH-DSA | 128 | 32 B | 64 B | 7856 B |
 | `SLH-DSA-SHA2-128f` | SLH-DSA | 128 | 32 B | 64 B | 17088 B |
 | `SLH-DSA-SHA2-192s` | SLH-DSA | 192 | 48 B | 96 B | 16224 B |
@@ -58,9 +60,10 @@ go test -v -timeout 10m ./...
 
 ```text
 PASS: TestRegistryHasAllAlgorithms
-PASS: TestSignVerifyAllAlgorithms (7 个子测试)
+PASS: TestSignVerifyAllAlgorithms (9 个子测试)
 PASS: TestKeyRoundTrip
-ok  	pqsig	2.547s
+PASS: TestAlgorithmExtensionRoundTrip
+ok  	pqsig	2.602s
 ```
 
 ## 证书扩展

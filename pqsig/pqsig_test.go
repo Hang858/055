@@ -7,7 +7,7 @@ import (
 
 func TestRegistryHasAllAlgorithms(t *testing.T) {
 	want := []string{
-		"Dilithium2",
+		"Dilithium2", "Dilithium3", "Dilithium5",
 		"SLH-DSA-SHA2-128s", "SLH-DSA-SHA2-128f",
 		"SLH-DSA-SHA2-192s", "SLH-DSA-SHA2-192f",
 		"SLH-DSA-SHA2-256s", "SLH-DSA-SHA2-256f",
