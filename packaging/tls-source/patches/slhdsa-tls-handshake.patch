@@ -162,7 +162,59 @@
  			// 👈 这里根据client端的协议交互流程来选择自己的协议交互流程
 --- a/src/crypto/tls/handshake_server_tls13.go
 +++ b/src/crypto/tls/handshake_server_tls13.go
-@@ -914,7 +914,7 @@
+@@ -19,6 +19,7 @@
+ 	"crypto/rand"
+ 	"crypto/rsa"
+ 	"crypto/tls/internal/fips140tls"
++	"crypto/x509"
+ 	_ "crypto/x509"
+ 	"errors"
+ 	"fmt"
+@@ -31,7 +32,6 @@
+ 	"slices"
+ 	"sort"
+ 	"time"
+-	"crypto/x509"
+ )
+ 
+ // maxClientPSKIdentities is the number of client PSK identities the server will
+@@ -72,19 +72,16 @@
+ 	echContext      *echServerContext
+ 	PQverifysupport bool //👈 这里拓展是否支持verify
+ 	//👈 这里记录了协议交互的具体类型
+-	protocoltype   uint16
+-	protocoltypestrict uint16
+-	pqPublicKey    kem.PublicKey //👈 记录拓展的公钥
+-	pqSharedSecret []byte
+-	pqPrivKey      kem.PrivateKey //👈 记录拓展的私钥
+-	persistentssKEM []byte // 👈 这里记录用Server自己的长期公钥密钥生成的会话密钥
+-	persistentCiphertextKEM []byte // 👈 这里记录用Client的长期公钥密钥生成的密文
+-	persistentssKEM_Client []byte // 👈 这里记录用Client的长期密钥生成的会话密钥
++	protocoltype            uint16
++	protocoltypestrict      uint16
++	pqPublicKey             kem.PublicKey //👈 记录拓展的公钥
++	pqSharedSecret          []byte
++	pqPrivKey               kem.PrivateKey //👈 记录拓展的私钥
++	persistentssKEM         []byte         // 👈 这里记录用Server自己的长期公钥密钥生成的会话密钥
++	persistentCiphertextKEM []byte         // 👈 这里记录用Client的长期公钥密钥生成的密文
++	persistentssKEM_Client  []byte         // 👈 这里记录用Client的长期密钥生成的会话密钥
+ }
+ 
+-
+-
+-
+ func (hs *serverHandshakeStateTLS13) handshake() error {
+ 	c := hs.c
+ 
+@@ -327,7 +324,6 @@
+ 		hs.hello.ProtocolType = hs.protocoltype
+ 	}
+ 
+-
+ 	// 👈记录协议类型和处理客户端公钥
+ 	if hs.protocoltype%10 == QuantumSupportKEX {
+ 		var pqCiphertext []byte
+@@ -914,7 +910,7 @@
  
  		// 读取客户端的 PQ 密钥交换消息
  		log.Println("等待抗量子密文信息")
@@ -171,7 +223,7 @@
  		if err != nil {
  			return err
  		}
-@@ -925,8 +925,25 @@
+@@ -925,8 +921,25 @@
  			c.sendAlert(alertUnexpectedMessage)
  			return unexpectedMessageError(pqKeyExchange, msg)
  		}
@@ -199,7 +251,7 @@
  
  		// 使用服务器私钥解密客户端发送的密文
  		hs.pqSharedSecret, err = kyber768.Scheme().Decapsulate(hs.pqPrivKey, pqKeyExchange.ciphertext)
-@@ -1073,21 +1090,42 @@
+@@ -1073,21 +1086,42 @@
  	sig := []byte{}
  	//👈 拓展抗量子认证部分，这里主要是就是去掉最后一位，观察高位的认证部分具体需要什么安全级别
  	if (hs.protocoltype/10)*10 == QuantumSupportSignCert {
@@ -247,9 +299,94 @@
  	} else {
  		certVerifyMsg.signatureAlgorithm = hs.sigAlg
  		sig, err = hs.cert.PrivateKey.(crypto.Signer).Sign(c.config.rand(), signed, signOpts)
+@@ -1311,10 +1345,12 @@
+ 		// See RFC 8446, Section 4.4.3.
+ 		// We don't use certReq.supportedSignatureAlgorithms because it would
+ 		// require keeping the certificateRequestMsgTLS13 around in the hs.
+-		if !isSupportedSignatureAlgorithm(certVerify.signatureAlgorithm, supportedSignatureAlgorithms(c.vers)) ||
+-			!isSupportedSignatureAlgorithm(certVerify.signatureAlgorithm, signatureSchemesForPublicKey(c.vers, c.peerCertificates[0].PublicKey)) {
+-			c.sendAlert(alertIllegalParameter)
+-			return errors.New("tls: client certificate used with invalid signature algorithm")
++		if !IsPQSignatureScheme(certVerify.signatureAlgorithm) {
++			if !isSupportedSignatureAlgorithm(certVerify.signatureAlgorithm, supportedSignatureAlgorithms(c.vers)) ||
++				!isSupportedSignatureAlgorithm(certVerify.signatureAlgorithm, signatureSchemesForPublicKey(c.vers, c.peerCertificates[0].PublicKey)) {
++				c.sendAlert(alertIllegalParameter)
++				return errors.New("tls: client certificate used with invalid signature algorithm")
++			}
+ 		}
+ 		sigType, sigHash, err := typeAndHashFromSignatureScheme(certVerify.signatureAlgorithm)
+ 		if err != nil {
+@@ -1324,7 +1360,18 @@
+ 			return c.sendAlert(alertInternalError)
+ 		}
+ 		signed := signedMessage(sigHash, clientSignatureContext, hs.transcript)
+-		if err := verifyHandshakeSignature(sigType, c.peerCertificates[0].PublicKey,
++		if IsPQSignatureScheme(certVerify.signatureAlgorithm) {
++			algName := PQSchemeName(certVerify.signatureAlgorithm)
++			if certAlg, certErr := myx509.QuantumAlgorithmFromCert(c.peerCertificates[0]); certErr == nil && certAlg != "" {
++				algName = certAlg
++			}
++			ok, err := myx509.VerifyQuantumSignatureFromCertAlg(c.peerCertificates[0], signed, certVerify.signature, algName)
++			if err != nil || !ok {
++				c.sendAlert(alertDecryptError)
++				return errors.New("tls: invalid PQ signature by the client certificate")
++			}
++			log.Printf("PQ client CertificateVerify verified alg=%s siglen=%d", algName, len(certVerify.signature))
++		} else if err := verifyHandshakeSignature(sigType, c.peerCertificates[0].PublicKey,
+ 			sigHash, signed, certVerify.signature); err != nil {
+ 			c.sendAlert(alertDecryptError)
+ 			return errors.New("tls: invalid signature by the client certificate: " + err.Error())
+@@ -1398,4 +1445,3 @@
+ 
+ 	return nil
+ }
+-
 --- a/src/crypto/tls/handshake_client_tls13.go
 +++ b/src/crypto/tls/handshake_client_tls13.go
-@@ -514,7 +514,7 @@
+@@ -23,9 +23,9 @@
+ 	"github.com/cloudflare/circl/kem"
+ 	"github.com/cloudflare/circl/kem/kyber/kyber768"
+ 	"hash"
++	"log"
+ 	"slices"
+ 	"time"
+-	"log"
+ )
+ 
+ type clientHandshakeStateTLS13 struct {
+@@ -49,16 +49,16 @@
+ 
+ 	echContext *echClientContext
+ 	//👈 这里记录了协议交互的具体类型
+-	protocoltype   uint16
++	protocoltype       uint16
+ 	protocoltypestrict uint16
+-	pqPublicKey    kem.PublicKey  //👈 记录拓展的密钥
+-	pqPrivKey      kem.PrivateKey //👈 记录拓展的密钥
+-	pqSharedSecret []byte
++	pqPublicKey        kem.PublicKey  //👈 记录拓展的密钥
++	pqPrivKey          kem.PrivateKey //👈 记录拓展的密钥
++	pqSharedSecret     []byte
+ 
+ 	// 👈 这里记录证书里长期公钥封装形成的密文
+ 	persistentCiphertextKEM []byte
+-	persistentssKEM []byte // 👈 这里记录用Server的长期密钥生成的会话密钥
+-	persistentssKEM_Client []byte // 👈 这里记录用Client的长期密钥生成的会话密钥
++	persistentssKEM         []byte // 👈 这里记录用Server的长期密钥生成的会话密钥
++	persistentssKEM_Client  []byte // 👈 这里记录用Client的长期密钥生成的会话密钥
+ }
+ 
+ // handshake requires hs.c, hs.hello, hs.serverHello, hs.keyShareKeys, and,
+@@ -85,8 +85,6 @@
+ 	//} else {
+ 	//	hs.protocoltype = ClassicAKE
+ 	//}
+-	
+-	
+ 
+ 	// The server must not select TLS 1.3 in a renegotiation. See RFC 8446,
+ 	// sections 4.1.2 and 4.1.3.
+@@ -514,7 +512,7 @@
  	}
  
  	// 将消息序列化并发送给服务器
@@ -258,7 +395,23 @@
  		return err
  	}
  
-@@ -823,7 +823,8 @@
+@@ -775,7 +773,6 @@
+ 	c.scts = certMsg.certificate.SignedCertificateTimestamps
+ 	c.ocspResponse = certMsg.certificate.OCSPStaple
+ 
+-
+ 	if err := c.verifyServerCertificate(certMsg.certificate.Certificate); err != nil {
+ 		return err
+ 	}
+@@ -803,7 +800,6 @@
+ 		hs.persistentssKEM = ss
+ 	}
+ 
+-
+ 	// certificateVerifyMsg is included in the transcript, but not until
+ 	// after we verify the handshake signature, since the state before
+ 	// this message was sent is used.
+@@ -823,7 +819,8 @@
  	// include PKCS#1 v1.5 and SHA-1 if the ClientHello also supported TLS 1.2.
  
  	// 👈 这里判断是否使用了抗量子签名证书
@@ -268,7 +421,7 @@
  		_, sigHash, err := typeAndHashFromSignatureScheme(certVerify.signatureAlgorithm)
  		if err != nil {
  			return c.sendAlert(alertInternalError)
-@@ -849,7 +850,11 @@
+@@ -849,7 +846,11 @@
  		//sum := hash.Sum(nil)
  		//fmt.Printf("XXXXXXXXXXXXXTranscript hash: %x\n", sum)
  		signed := signedMessage(sigHash, serverSignatureContext, hs.transcript)
@@ -281,6 +434,107 @@
  		//result, errors := myx509.VerifyQuantumSignatureFromCertFile("pqcerts/end-entity.pem",signed,certVerify.signature)
  		if err := transcriptMsg(certVerify, hs.transcript); err != nil {
  			return err
+@@ -863,7 +864,7 @@
+ 		}
+ 		return errors1
+ 
+-	} else if (hs.serverHello.ProtocolType/10)*10 == ClassicSign  {
++	} else if (hs.serverHello.ProtocolType/10)*10 == ClassicSign {
+ 		if !isSupportedSignatureAlgorithm(certVerify.signatureAlgorithm, supportedSignatureAlgorithms(c.vers)) ||
+ 			!isSupportedSignatureAlgorithm(certVerify.signatureAlgorithm, signatureSchemesForPublicKey(c.vers, c.peerCertificates[0].PublicKey)) {
+ 			c.sendAlert(alertIllegalParameter)
+@@ -973,12 +974,9 @@
+ 
+ 	certMsg.persistentCiphertextKEM = hs.persistentCiphertextKEM
+ 
+-
+-
+ 	if _, err := hs.c.writeHandshakeRecord(certMsg, hs.transcript); err != nil {
+ 		return err
+ 	}
+-	
+ 
+ 	// If we sent an empty certificate message, skip the CertificateVerify.
+ 	if len(cert.Certificate) == 0 {
+@@ -988,30 +986,47 @@
+ 	certVerifyMsg := new(certificateVerifyMsg)
+ 	certVerifyMsg.hasSignatureAlgorithm = true
+ 
+-	certVerifyMsg.signatureAlgorithm, err = selectSignatureScheme(c.vers, cert, hs.certReq.supportedSignatureAlgorithms)
+-	if err != nil {
+-		// getClientCertificate returned a certificate incompatible with the
+-		// CertificateRequestInfo supported signature algorithms.
+-		c.sendAlert(alertHandshakeFailure)
+-		return err
+-	}
+-
+-	sigType, sigHash, err := typeAndHashFromSignatureScheme(certVerifyMsg.signatureAlgorithm)
+-	if err != nil {
+-		return c.sendAlert(alertInternalError)
+-	}
+-
+-	signed := signedMessage(sigHash, clientSignatureContext, hs.transcript)
+-	signOpts := crypto.SignerOpts(sigHash)
+-	if sigType == signatureRSAPSS {
+-		signOpts = &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: sigHash}
+-	}
+-	sig, err := cert.PrivateKey.(crypto.Signer).Sign(c.config.rand(), signed, signOpts)
+-	if err != nil {
+-		c.sendAlert(alertInternalError)
+-		return errors.New("tls: failed to sign handshake: " + err.Error())
++	if c.config.KEMTLSSigAlg != "" {
++		scheme, ok := PQSchemeByName(c.config.KEMTLSSigAlg)
++		if !ok {
++			c.sendAlert(alertInternalError)
++			return errors.New("tls: unknown client PQ signature algorithm")
++		}
++		certVerifyMsg.signatureAlgorithm = scheme
++		_, sigHash, err := typeAndHashFromSignatureScheme(scheme)
++		if err != nil {
++			return c.sendAlert(alertInternalError)
++		}
++		signed := signedMessage(sigHash, clientSignatureContext, hs.transcript)
++		sig, err := myx509.QuantumSignWithLocalKeyAlg(signed, c.config.KEMTLSSigKey, c.config.KEMTLSSigAlg)
++		if err != nil {
++			c.sendAlert(alertInternalError)
++			return errors.New("tls: failed to sign client CertificateVerify: " + err.Error())
++		}
++		certVerifyMsg.signature = sig
++		log.Printf("PQ client CertificateVerify scheme=0x%04x alg=%s siglen=%d", uint16(scheme), c.config.KEMTLSSigAlg, len(sig))
++	} else {
++		certVerifyMsg.signatureAlgorithm, err = selectSignatureScheme(c.vers, cert, hs.certReq.supportedSignatureAlgorithms)
++		if err != nil {
++			c.sendAlert(alertHandshakeFailure)
++			return err
++		}
++		sigType, sigHash, err := typeAndHashFromSignatureScheme(certVerifyMsg.signatureAlgorithm)
++		if err != nil {
++			return c.sendAlert(alertInternalError)
++		}
++		signed := signedMessage(sigHash, clientSignatureContext, hs.transcript)
++		signOpts := crypto.SignerOpts(sigHash)
++		if sigType == signatureRSAPSS {
++			signOpts = &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: sigHash}
++		}
++		sig, err := cert.PrivateKey.(crypto.Signer).Sign(c.config.rand(), signed, signOpts)
++		if err != nil {
++			c.sendAlert(alertInternalError)
++			return errors.New("tls: failed to sign handshake: " + err.Error())
++		}
++		certVerifyMsg.signature = sig
+ 	}
+-	certVerifyMsg.signature = sig
+ 
+ 	if _, err := hs.c.writeHandshakeRecord(certVerifyMsg, hs.transcript); err != nil {
+ 		return err
+@@ -1048,7 +1063,6 @@
+ 			c.sendAlert(alertIllegalParameter)
+ 			return errors.New("tls: invalid PQ key exchange")
+ 		}
+-		
+ 
+ 	}
+ 
 --- a/src/crypto/myx509/myx509.go
 +++ b/src/crypto/myx509/myx509.go
 @@ -11,14 +11,17 @@

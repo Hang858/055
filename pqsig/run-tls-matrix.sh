@@ -24,7 +24,8 @@ for alg in "${ALGS[@]}"; do
     dir=$OUT/$alg
     mkdir -p "$dir/server/pqcerts" "$dir/client/pqcerts"
     "$PQKEY" -alg "$alg" -out "$dir/sig" >/dev/null
-    "$PQCert" -alg "$alg" -pub "$dir/sig.pub" -out "$dir/certs" >/dev/null
+    "$PQKEY" -alg "$alg" -out "$dir/client-sig" >/dev/null
+    "$PQCert" -alg "$alg" -pub "$dir/sig.pub" -client-pub "$dir/client-sig.pub" -out "$dir/certs" >/dev/null
     for side in server client; do
         cp "$dir/certs/root.crt" "$dir/$side/pqcerts/root-ca.pem"
         cp "$dir/certs/$side.crt" "$dir/$side/pqcerts/end-entity.pem"
@@ -42,7 +43,8 @@ for alg in "${ALGS[@]}"; do
         ss -ltn 2>/dev/null | grep -q ':8443 ' && break
         sleep 0.1
     done
-    if (cd "$dir/client" && KEMTLS_CONNECTIONS=1 timeout 40 "$CLIENT" > "$dir/client.log" 2>&1); then
+    if (cd "$dir/client" && KEMTLS_CONNECTIONS=1 KEMTLS_SIG_ALG="$alg" KEMTLS_SIG_KEY="$dir/client-sig.priv" \
+        timeout 40 "$CLIENT" > "$dir/client.log" 2>&1); then
         if grep -q 'TLS handshake OK' "$dir/client.log" && grep -q 'PQ server CertificateVerify' "$dir/server.log"; then
             echo "PASS: TLS handshake $alg"
             pass=$((pass+1))

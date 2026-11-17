@@ -29,6 +29,7 @@ var (
 func main() {
 	algName := flag.String("alg", "SLH-DSA-SHA2-128s", "PQ signature algorithm")
 	pubPath := flag.String("pub", "", "raw PQ public key file for the server leaf")
+	clientPubPath := flag.String("client-pub", "", "raw PQ public key file for the client leaf")
 	out := flag.String("out", "", "output directory")
 	flag.Parse()
 	if *out == "" || *pubPath == "" {
@@ -44,6 +45,14 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
 		os.Exit(1)
+	}
+	var clientPub []byte
+	if *clientPubPath != "" {
+		clientPub, err = os.ReadFile(*clientPubPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	if err := os.MkdirAll(*out, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
@@ -106,6 +115,12 @@ func main() {
 		NotAfter:     now.AddDate(1, 0, 0),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	if len(clientPub) != 0 {
+		client.ExtraExtensions = []pkix.Extension{
+			{Id: oidPQPublic, Value: clientPub},
+			{Id: oidPQAlgorithm, Value: algDER},
+		}
 	}
 	clientKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

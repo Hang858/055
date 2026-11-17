@@ -76,6 +76,8 @@ func main() {
 
 		// 👈 新增 ✅ 关键：客户端证书（发给 server）
 		Certificates: []tls.Certificate{clientCert},
+		KEMTLSSigAlg: os.Getenv("KEMTLS_SIG_ALG"),
+		KEMTLSSigKey: os.Getenv("KEMTLS_SIG_KEY"),
 	}
 
 	//start := time.Now()
