@@ -188,3 +188,30 @@ patch -p1 < ahs-key-schedule.patch
 
 边界：KEM 密文仍复用 Certificate/type 252，未改成独立 KEMEncapsulation 消息。
 详见 `docs/AHS两阶段密钥调度-20261120.md`。
+
+## kem-encapsulation-message.patch
+
+对应 2026-11-20 的独立 KEMEncapsulation 消息：
+
+- 新增私有握手消息类型 251，消息体只放 KEM 密文；
+- 客户端 `server_auth=KEM` 时在证书前发送 KEMEncapsulation；
+- 服务端 `client_auth=KEM` 时在读完客户端证书/CV 后发送 KEMEncapsulation；
+- `certificateMsgTLS13` 删除 `persistentCiphertextKEM` 字段；
+- 删除旧的 type 252；
+- 消息进入 transcript，参与 AHS 派生。
+
+应用顺序：
+
+```bash
+patch -p1 < slhdsa-tls-handshake.patch
+patch -p1 < kem-registry-tls.patch
+patch -p1 < protocol-mode-negotiation.patch
+patch -p1 < kem-key-schedule.patch
+patch -p1 < pq-certificate-chain.patch
+patch -p1 < heterogeneous-auth.patch
+patch -p1 < ahs-key-schedule.patch
+patch -p1 < kem-encapsulation-message.patch
+```
+
+与阶段 4/5a 的旧 wire format 不兼容。详见
+`docs/KEMEncapsulation消息-20261120.md`。
