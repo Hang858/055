@@ -1,0 +1,420 @@
+diff -ruN .build/backup-before-pqchain/myx509/myx509.go .build/extracted/go_kemtls/src/crypto/myx509/myx509.go
+--- a/src/crypto/myx509/myx509.go	2026-11-20 09:34:50.418889249 +0800
++++ b/src/crypto/myx509/myx509.go	2026-11-20 10:41:29.296190635 +0800
+@@ -1,6 +1,7 @@
+ package myx509
+ 
+ import (
++	"bytes"
+ 	"crypto"
+ 	"crypto/pq"
+ 	"crypto/rand"
+@@ -227,77 +228,153 @@
+ 	fmt.Println("=====================================")
+ }
+ 
+-// 验证抗量子签名功能
+-func VerifyQuantumSignature(cert *x509.Certificate, parent *x509.Certificate) error {
+-	fmt.Printf("\n验证 %s 的抗量子签名:\n", cert.Subject.CommonName)
++// PQCertificateSigningExtension 是证书签名输入中的一个扩展项。
++type PQCertificateSigningExtension struct {
++	OID      asn1.ObjectIdentifier
++	Critical bool
++	Value    []byte
++}
++
++// PQCertificateSigningInput 是 PQ 证书签名的规范化输入（CSI）。
++//
++// 它覆盖证书的版本、序列号、签发者、主体、有效期、公钥、经典签名算法和
++// 除 .1.2（PQ 签名本身）以外的全部扩展。生成方先用不带 .1.2 的“原型证书”
++// 计算 CSI 并签名，再把 .1.2 加入最终证书；验证方从最终证书重算同一 CSI。
++// 这样 PQ 签名不与自身形成循环，同时绑定证书的全部语义（包括 PQ/KEM 公钥）。
++type PQCertificateSigningInput struct {
++	Version              int
++	SerialNumber         *big.Int
++	SignatureAlgorithm   int
++	Issuer               []byte
++	Subject              []byte
++	NotBefore            string
++	NotAfter             string
++	SubjectPublicKeyInfo []byte
++	Extensions           []PQCertificateSigningExtension
++}
+ 
+-	// 检查是否支持抗量子
+-	if !CheckQuantumResistanceSupport(cert) {
+-		return fmt.Errorf("证书不支持抗量子算法")
++// CertificateSigningInput 从已解析的证书构造 CSI，排除 PQ 签名扩展 .1.2。
++func CertificateSigningInput(cert *x509.Certificate) ([]byte, error) {
++	if cert == nil {
++		return nil, fmt.Errorf("证书为空")
++	}
++	issuer := cert.RawIssuer
++	if len(issuer) == 0 {
++		var err error
++		issuer, err = asn1.Marshal(cert.Issuer.ToRDNSequence())
++		if err != nil {
++			return nil, fmt.Errorf("编码颁发者失败: %v", err)
++		}
+ 	}
++	subject := cert.RawSubject
++	if len(subject) == 0 {
++		var err error
++		subject, err = asn1.Marshal(cert.Subject.ToRDNSequence())
++		if err != nil {
++			return nil, fmt.Errorf("编码使用者失败: %v", err)
++		}
++	}
++	spki := cert.RawSubjectPublicKeyInfo
++	if len(spki) == 0 {
++		var err error
++		spki, err = x509.MarshalPKIXPublicKey(cert.PublicKey)
++		if err != nil {
++			return nil, fmt.Errorf("编码公钥失败: %v", err)
++		}
++	}
++	in := PQCertificateSigningInput{
++		Version:              cert.Version,
++		SerialNumber:         cert.SerialNumber,
++		SignatureAlgorithm:   int(cert.SignatureAlgorithm),
++		Issuer:               append([]byte(nil), issuer...),
++		Subject:              append([]byte(nil), subject...),
++		NotBefore:            cert.NotBefore.UTC().Format(time.RFC3339Nano),
++		NotAfter:             cert.NotAfter.UTC().Format(time.RFC3339Nano),
++		SubjectPublicKeyInfo: append([]byte(nil), spki...),
++	}
++	for _, ext := range cert.Extensions {
++		if ext.Id.Equal(OIDQuantumSignature) {
++			continue
++		}
++		in.Extensions = append(in.Extensions, PQCertificateSigningExtension{
++			OID:      ext.Id,
++			Critical: ext.Critical,
++			Value:    append([]byte(nil), ext.Value...),
++		})
++	}
++	return asn1.Marshal(in)
++}
+ 
+-	info := GetQuantumAlgorithmInfo(cert)
+-	if !info.HasQuantumSignature {
++// VerifyQuantumSignature 用父证书的 PQ 公钥验证子证书的 PQ 签名。
++func VerifyQuantumSignature(cert *x509.Certificate, parent *x509.Certificate) error {
++	if cert == nil || parent == nil {
++		return fmt.Errorf("证书或父证书为空")
++	}
++	var signature []byte
++	for _, ext := range cert.Extensions {
++		if ext.Id.Equal(OIDQuantumSignature) {
++			signature = ext.Value
++			break
++		}
++	}
++	if len(signature) == 0 {
+ 		return fmt.Errorf("证书未包含抗量子签名")
+ 	}
+-
+-	if !CheckQuantumResistanceSupport(parent) {
+-		return fmt.Errorf("父证书不支持抗量子算法")
++	var parentPub []byte
++	for _, ext := range parent.Extensions {
++		if ext.Id.Equal(OIDQuantumSIGPublicKey) {
++			parentPub = ext.Value
++			break
++		}
+ 	}
+-
+-	parentInfo := GetQuantumAlgorithmInfo(parent)
+-	if !parentInfo.HasQuantumPublicKey {
++	if len(parentPub) == 0 {
+ 		return fmt.Errorf("父证书未包含抗量子公钥")
+ 	}
+-
+-	// 从父证书提取抗量子公钥
+-	parentQuantumPublicKey, err := extractQuantumPublicKeyFromParent(parent)
++	algName, err := QuantumAlgorithmFromCert(cert)
+ 	if err != nil {
+-		return fmt.Errorf("提取父证书抗量子公钥失败: %v", err)
++		return err
+ 	}
+-
+-	// 从当前证书提取抗量子签名
+-	quantumSignature, err := extractQuantumSignatureFromCert(cert)
++	csi, err := CertificateSigningInput(cert)
+ 	if err != nil {
+-		return fmt.Errorf("提取抗量子签名失败: %v", err)
+-	}
+-
+-	// 构建验证模板
+-	verificationTemplate := x509.Certificate{
+-		Version:      cert.Version,
+-		SerialNumber: cert.SerialNumber,
+-		Issuer:       parent.Subject,
+-		Subject:      cert.Subject,
+-		NotBefore:    cert.NotBefore,
+-		NotAfter:     cert.NotAfter,
+-		PublicKey:    cert.PublicKey,
++		return err
+ 	}
+-
+-	// 使用原始数据确保一致性
+-	if cert.RawIssuer != nil {
+-		verificationTemplate.RawIssuer = make([]byte, len(cert.RawIssuer))
+-		copy(verificationTemplate.RawIssuer, cert.RawIssuer)
+-	}
+-	if cert.RawSubject != nil {
+-		verificationTemplate.RawSubject = make([]byte, len(cert.RawSubject))
+-		copy(verificationTemplate.RawSubject, cert.RawSubject)
+-	}
+-
+-	// 创建TBS数据
+-	tbsData, err := createTBSDataWithoutExtensions(&verificationTemplate)
++	ok, err := pqVerifyWithAlg(algName, parentPub, csi, signature)
+ 	if err != nil {
+-		return fmt.Errorf("创建TBS数据失败: %v", err)
++		return fmt.Errorf("抗量子签名验证失败: %v", err)
+ 	}
+-
+-	fmt.Printf("  TBS数据哈希: %x\n", sha256.Sum256(tbsData))
+-	fmt.Printf("  签名大小: %d 字节\n", len(quantumSignature))
+-
+-	// 验证签名
+-	if !quantumVerify(parentQuantumPublicKey, tbsData, quantumSignature) {
++	if !ok {
+ 		return fmt.Errorf("抗量子签名验证失败")
+ 	}
++	return nil
++}
+ 
+-	fmt.Printf("✓ 抗量子签名验证成功\n")
++// VerifyCertificateChainPQ 从叶子向上验证每个证书的 PQ 签名。roots 用于验证
++// 链顶证书（TLS 对端通常不发送根证书）。链中的证书必须按叶子到根的顺序排列。
++func VerifyCertificateChainPQ(chain []*x509.Certificate, roots []*x509.Certificate) error {
++	if len(chain) == 0 {
++		return fmt.Errorf("证书链为空")
++	}
++	for i, cert := range chain {
++		parent := (*x509.Certificate)(nil)
++		if i+1 < len(chain) {
++			parent = chain[i+1]
++		} else if bytes.Equal(cert.RawIssuer, cert.RawSubject) {
++			parent = cert
++		} else {
++			for _, root := range roots {
++				if bytes.Equal(cert.RawIssuer, root.RawSubject) {
++					parent = root
++					break
++				}
++			}
++		}
++		if parent == nil {
++			return fmt.Errorf("证书 %q 的签发者不在链或 PQ 根池中", cert.Subject.CommonName)
++		}
++		if err := VerifyQuantumSignature(cert, parent); err != nil {
++			return fmt.Errorf("证书 %q 的 PQ 签名验证失败: %w", cert.Subject.CommonName, err)
++		}
++	}
+ 	return nil
+ }
+ 
+diff -ruN .build/backup-before-pqchain/myx509/pq_chain_test.go .build/extracted/go_kemtls/src/crypto/myx509/pq_chain_test.go
+--- a/src/crypto/myx509/pq_chain_test.go	1970-01-01 08:00:00.000000000 +0800
++++ b/src/crypto/myx509/pq_chain_test.go	2026-11-20 10:43:49.093769886 +0800
+@@ -0,0 +1,124 @@
++package myx509
++
++import (
++	"crypto/rand"
++	"crypto/rsa"
++	"crypto/x509"
++	"crypto/x509/pkix"
++	"encoding/asn1"
++	"math/big"
++	"testing"
++	"time"
++
++	mode2 "github.com/cloudflare/circl/sign/dilithium/mode2"
++)
++
++// dualSignTest 复制 pqcertlab 的两阶段签名：先签不带 .1.2 的原型证书，
++// 用 CSI 生成 PQ 签名，再把 .1.2 加入最终证书。
++func dualSignTest(t *testing.T, template, parent *x509.Certificate, pub *rsa.PublicKey, parentKey *rsa.PrivateKey, pqPriv []byte) []byte {
++	t.Helper()
++	protoDER, err := x509.CreateCertificate(rand.Reader, template, parent, pub, parentKey)
++	if err != nil {
++		t.Fatal(err)
++	}
++	proto, err := x509.ParseCertificate(protoDER)
++	if err != nil {
++		t.Fatal(err)
++	}
++	csi, err := CertificateSigningInput(proto)
++	if err != nil {
++		t.Fatal(err)
++	}
++	sig, err := pqSignWithAlg("Dilithium2", pqPriv, csi)
++	if err != nil {
++		t.Fatal(err)
++	}
++	template.ExtraExtensions = append(template.ExtraExtensions, pkix.Extension{Id: OIDQuantumSignature, Value: sig})
++	der, err := x509.CreateCertificate(rand.Reader, template, parent, pub, parentKey)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return der
++}
++
++func TestPQCertificateChain(t *testing.T) {
++	rootRSA, err := rsa.GenerateKey(rand.Reader, 2048)
++	if err != nil {
++		t.Fatal(err)
++	}
++	rootPub, rootPriv, err := mode2.GenerateKey(rand.Reader)
++	if err != nil {
++		t.Fatal(err)
++	}
++	rootPrivRaw, err := rootPriv.MarshalBinary()
++	if err != nil {
++		t.Fatal(err)
++	}
++	algDER, err := asn1.Marshal(pqSigAlgOIDs["Dilithium2"])
++	if err != nil {
++		t.Fatal(err)
++	}
++	now := time.Now()
++	root := &x509.Certificate{
++		SerialNumber:          big.NewInt(1),
++		Subject:               pkix.Name{CommonName: "PQ Root"},
++		NotBefore:             now.Add(-time.Hour),
++		NotAfter:              now.Add(time.Hour),
++		IsCA:                  true,
++		BasicConstraintsValid: true,
++		KeyUsage:              x509.KeyUsageCertSign,
++		ExtraExtensions: []pkix.Extension{
++			{Id: OIDQuantumSIGPublicKey, Value: rootPub.Bytes()},
++			{Id: OIDQuantumAlgorithm, Value: algDER},
++		},
++	}
++	rootDER := dualSignTest(t, root, root, &rootRSA.PublicKey, rootRSA, rootPrivRaw)
++	rootCert, err := x509.ParseCertificate(rootDER)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	leafRSA, err := rsa.GenerateKey(rand.Reader, 2048)
++	if err != nil {
++		t.Fatal(err)
++	}
++	leafPub, _, err := mode2.GenerateKey(rand.Reader)
++	if err != nil {
++		t.Fatal(err)
++	}
++	leaf := &x509.Certificate{
++		SerialNumber: big.NewInt(2),
++		Subject:      pkix.Name{CommonName: "PQ Leaf"},
++		NotBefore:    now.Add(-time.Hour),
++		NotAfter:     now.Add(time.Hour),
++		KeyUsage:     x509.KeyUsageDigitalSignature,
++		ExtraExtensions: []pkix.Extension{
++			{Id: OIDQuantumSIGPublicKey, Value: leafPub.Bytes()},
++			{Id: OIDQuantumAlgorithm, Value: algDER},
++		},
++	}
++	leafDER := dualSignTest(t, leaf, rootCert, &leafRSA.PublicKey, rootRSA, rootPrivRaw)
++	leafCert, err := x509.ParseCertificate(leafDER)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if err := VerifyCertificateChainPQ([]*x509.Certificate{leafCert}, []*x509.Certificate{rootCert}); err != nil {
++		t.Fatalf("chain verification failed: %v", err)
++	}
++	if err := VerifyQuantumSignature(rootCert, rootCert); err != nil {
++		t.Fatalf("root self verification failed: %v", err)
++	}
++
++	tampered := *leafCert
++	tampered.Extensions = append([]pkix.Extension(nil), leafCert.Extensions...)
++	for i := range tampered.Extensions {
++		if tampered.Extensions[i].Id.Equal(OIDQuantumSignature) {
++			tampered.Extensions[i].Value = append([]byte(nil), tampered.Extensions[i].Value...)
++			tampered.Extensions[i].Value[0] ^= 0xff
++		}
++	}
++	if err := VerifyQuantumSignature(&tampered, rootCert); err == nil {
++		t.Fatal("tampered PQ signature must be rejected")
++	}
++}
+diff -ruN .build/backup-before-pqchain/tls/common.go .build/extracted/go_kemtls/src/crypto/tls/common.go
+--- a/src/crypto/tls/common.go	2026-11-20 10:23:02.777542938 +0800
++++ b/src/crypto/tls/common.go	2026-11-20 10:42:37.631943105 +0800
+@@ -811,6 +811,15 @@
+ 	// If RootCAs is nil, TLS uses the host's root CA set.
+ 	RootCAs *x509.CertPool
+ 
++	// PQRoots 是 PQ 证书链验证使用的根证书集合。TLS 对端通常不发送根证书，
++	// 所以 PQ 链验证需要从这里取根。仅在 RequirePQCertificateChain 为 true
++	// 时使用；根证书需带 .1.1 PQ 公钥扩展。
++	PQRoots []*x509.Certificate
++
++	// RequirePQCertificateChain 要求对端证书链的每个 .1.2 PQ 签名都可验证。
++	// 默认 false，保持旧证书和标准 TLS 行为不变。
++	RequirePQCertificateChain bool
++
+ 	// NextProtos is a list of supported application level protocols, in
+ 	// order of preference. If both peers support ALPN, the selected
+ 	// protocol will be one from this list, and the connection will fail
+@@ -1189,6 +1198,8 @@
+ 		VerifyPeerCertificate:               c.VerifyPeerCertificate,
+ 		VerifyConnection:                    c.VerifyConnection,
+ 		RootCAs:                             c.RootCAs,
++		PQRoots:                             slices.Clone(c.PQRoots),
++		RequirePQCertificateChain:           c.RequirePQCertificateChain,
+ 		NextProtos:                          c.NextProtos,
+ 		ServerName:                          c.ServerName,
+ 		ClientAuth:                          c.ClientAuth,
+diff -ruN .build/backup-before-pqchain/tls/handshake_client.go .build/extracted/go_kemtls/src/crypto/tls/handshake_client.go
+--- a/src/crypto/tls/handshake_client.go	2026-11-20 10:28:57.271371077 +0800
++++ b/src/crypto/tls/handshake_client.go	2026-11-20 10:42:49.478883136 +0800
+@@ -13,6 +13,7 @@
+ 	"crypto/internal/fips140/mlkem"
+ 	"crypto/internal/fips140/tls13"
+ 	"crypto/internal/hpke"
++	"crypto/myx509"
+ 	"crypto/rsa"
+ 	"crypto/subtle"
+ 	"crypto/tls/internal/fips140tls"
+@@ -1231,6 +1232,13 @@
+ 
+ 	c.peerCertificates = certs
+ 
++	if c.config.RequirePQCertificateChain {
++		if err := myx509.VerifyCertificateChainPQ(certs, c.config.PQRoots); err != nil {
++			c.sendAlert(alertBadCertificate)
++			return &CertificateVerificationError{UnverifiedCertificates: certs, Err: err}
++		}
++	}
++
+ 	if c.config.VerifyPeerCertificate != nil && !echRejected {
+ 		if err := c.config.VerifyPeerCertificate(certificates, c.verifiedChains); err != nil {
+ 			c.sendAlert(alertBadCertificate)
+diff -ruN .build/backup-before-pqchain/tls/handshake_server_tls13.go .build/extracted/go_kemtls/src/crypto/tls/handshake_server_tls13.go
+--- a/src/crypto/tls/handshake_server_tls13.go	2026-11-20 10:34:27.128387635 +0800
++++ b/src/crypto/tls/handshake_server_tls13.go	2026-11-20 10:42:41.224196592 +0800
+@@ -1482,6 +1482,16 @@
+ 	if err := c.processCertsFromClient(certMsg.certificate); err != nil {
+ 		return err
+ 	}
++	if c.config.RequirePQCertificateChain {
++		if len(c.peerCertificates) == 0 {
++			c.sendAlert(alertBadCertificate)
++			return errors.New("tls: missing client certificate for PQ chain verification")
++		}
++		if err := myx509.VerifyCertificateChainPQ(c.peerCertificates, c.config.PQRoots); err != nil {
++			c.sendAlert(alertBadCertificate)
++			return fmt.Errorf("tls: PQ client certificate chain: %w", err)
++		}
++	}
+ 
+ 	if c.config.VerifyConnection != nil {
+ 		if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {

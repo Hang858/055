@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
@@ -13,9 +14,10 @@ import (
 )
 
 // protocolConfigFromEnv 读取交互类型配置，便于矩阵测试不重编译：
-//   KEMTLS_PROTOCOL_TYPE   首选类型（单个整数）
-//   KEMTLS_PROTOCOL_TYPES  支持列表，逗号分隔，首项为首选
-//   KEMTLS_MODE_COMPAT     1 表示愿意跟随对端类型并回退 ClassicAKE
+//
+//	KEMTLS_PROTOCOL_TYPE   首选类型（单个整数）
+//	KEMTLS_PROTOCOL_TYPES  支持列表，逗号分隔，首项为首选
+//	KEMTLS_MODE_COMPAT     1 表示愿意跟随对端类型并回退 ClassicAKE
 func protocolConfigFromEnv(defaultType uint16) (uint16, []uint16, bool) {
 	primary := defaultType
 	if v := os.Getenv("KEMTLS_PROTOCOL_TYPE"); v != "" {
@@ -82,6 +84,27 @@ func loadServerCertificate() (tls.Certificate, error) {
 	return cert, nil
 }
 
+// loadPQRoots 读取 PQ 证书链验证所需的根证书；默认使用 pqcerts/root-ca.pem。
+func loadPQRoots() ([]*x509.Certificate, error) {
+	path := os.Getenv("KEMTLS_PQ_ROOT")
+	if path == "" {
+		path = "pqcerts/root-ca.pem"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read PQ root %s: %w", path, err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("decode PQ root %s: no PEM block", path)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse PQ root %s: %w", path, err)
+	}
+	return []*x509.Certificate{cert}, nil
+}
+
 func main() {
 	cert, err := loadServerCertificate()
 	if err != nil {
@@ -94,6 +117,14 @@ func main() {
 	}
 
 	protocolType, protocolTypes, modeCompat := protocolConfigFromEnv(tls.QuantumSupportAKEX)
+	requirePQChain := os.Getenv("KEMTLS_PQ_CHAIN") == "1"
+	var pqRoots []*x509.Certificate
+	if requirePQChain {
+		pqRoots, err = loadPQRoots()
+		if err != nil {
+			log.Fatalf("loadPQRoots failed: %v", err)
+		}
+	}
 
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{cert},
@@ -104,14 +135,16 @@ func main() {
 		ClientAuth: tls.RequireAnyClientCert,
 		ClientCAs:  clientCAs,
 		//ProtocolType:       tls.QuantumSupportAKEX,
-		ProtocolType:          protocolType,
-		ProtocolTypes:         protocolTypes,
-		ModeCompatibilityFlag: modeCompat,
-		ProtocolTypeStrict:    0, // 👈 旧接口，保留兼容；新配置用 ModeCompatibilityFlag
-		KEMTLSSigAlg:           os.Getenv("KEMTLS_SIG_ALG"),
-		KEMTLSSigKey:           os.Getenv("KEMTLS_SIG_KEY"),
-		KEMTLSKEMAlg:           os.Getenv("KEMTLS_KEM_ALG"),
-		KEMTLSKEMKey:           os.Getenv("KEMTLS_KEM_KEY"),
+		ProtocolType:              protocolType,
+		ProtocolTypes:             protocolTypes,
+		ModeCompatibilityFlag:     modeCompat,
+		ProtocolTypeStrict:        0, // 👈 旧接口，保留兼容；新配置用 ModeCompatibilityFlag
+		PQRoots:                   pqRoots,
+		RequirePQCertificateChain: requirePQChain,
+		KEMTLSSigAlg:              os.Getenv("KEMTLS_SIG_ALG"),
+		KEMTLSSigKey:              os.Getenv("KEMTLS_SIG_KEY"),
+		KEMTLSKEMAlg:              os.Getenv("KEMTLS_KEM_ALG"),
+		KEMTLSKEMKey:              os.Getenv("KEMTLS_KEM_KEY"),
 	}
 
 	// 使用 TLS 监听

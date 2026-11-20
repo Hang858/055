@@ -141,5 +141,10 @@ err := alg.Verify(kp.Public, input, sig)
 - `.1.4`：KEM 算法 OID
 - `.1.3` 仍只表示 PQ 签名算法
 
-TLS 侧对应 `KEMTLS_KEM_ALG` / `KEMTLS_KEM_KEY`。注意当前 KEM 共享密钥尚未进入
-`key_schedule`，仅完成了算法注册与握手路径接入。
+`pqcertlab` 同时生成双签名证书：根证书 `.1.1` 是根 PQ 公钥、`.1.2` 是根 PQ
+自签；叶证书 `.1.2` 是根 PQ 密钥对叶证书 CSI 的签名。`-bad-pq` 会用一次性
+错误密钥签叶证书，用于验证 PQ 链失败而经典链仍然有效。
+
+TLS 侧对应 `KEMTLS_KEM_ALG` / `KEMTLS_KEM_KEY`；KEM 共享密钥已进入应用流量
+密钥（见 `docs/KEM密钥调度-20261120.md`），证书链 PQ 验签见
+`docs/证书链PQ验签-20261120.md`。

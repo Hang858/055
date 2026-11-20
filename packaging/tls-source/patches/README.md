@@ -112,3 +112,26 @@ patch -p1 < kem-key-schedule.patch
 
 边界：握手流量密钥仍来自 ECDHE；未实现纯 KEM、0.5-RTT 数据和 KEM 证书链 PQ 验签。
 详见 `docs/KEM密钥调度-20261120.md`。
+
+## pq-certificate-chain.patch
+
+对应 2026-11-20 的证书链 PQ 验签：
+
+- 新增 `CertificateSigningInput`（CSI），覆盖除 `.1.2` 外的全部证书字段和扩展；
+- `VerifyQuantumSignature` 改为验证 CSI，并支持按证书 `.1.3` 选择算法；
+- 新增 `VerifyCertificateChainPQ`，从叶子向根验证，根从 `PQRoots` 取；
+- `Config` 新增 `PQRoots`、`RequirePQCertificateChain`（默认关闭）；
+- 客户端和服务端分别在证书验证阶段调用 PQ 链验证；
+- `pqcertlab` 生成双签名证书，支持 `-bad-pq` 负例。
+
+应用顺序：
+
+```bash
+patch -p1 < slhdsa-tls-handshake.patch
+patch -p1 < kem-registry-tls.patch
+patch -p1 < protocol-mode-negotiation.patch
+patch -p1 < kem-key-schedule.patch
+patch -p1 < pq-certificate-chain.patch
+```
+
+测试与边界见 `docs/证书链PQ验签-20261120.md`。
