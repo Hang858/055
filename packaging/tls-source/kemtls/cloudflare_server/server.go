@@ -78,6 +78,8 @@ func main() {
 		ProtocolTypeStrict: 0, // 👈 这里表示是不是强制需要执行这个协议版本
 		KEMTLSSigAlg:       os.Getenv("KEMTLS_SIG_ALG"),
 		KEMTLSSigKey:       os.Getenv("KEMTLS_SIG_KEY"),
+		KEMTLSKEMAlg:       os.Getenv("KEMTLS_KEM_ALG"),
+		KEMTLSKEMKey:       os.Getenv("KEMTLS_KEM_KEY"),
 	}
 
 	// 使用 TLS 监听

@@ -120,3 +120,26 @@ err := alg.Verify(kp.Public, input, sig)
 
 - SLH-DSA 签名尺寸远大于 Dilithium2，256f 约 49 KB，不能直接用于高频 TLS 握手。
 - 当前 `OID()` 中 Dilithium2 使用项目私有 OID，SLH-DSA 使用 RFC 9909 的 `.3.20`～`.25`；证书扩展接入后以扩展里的算法标识为准。
+
+## KEM 证书（占位 KEM）
+
+`pqcertlab` 支持给服务端/客户端叶证书追加 KEM 公钥和算法 OID：
+
+```sh
+# 生成原始 KEM 密钥（先构建 pqc/cmd/pqkemkey）
+(cd pqc && CGO_ENABLED=1 go build -o ../.build/pqkemkey ./cmd/pqkemkey)
+.build/pqkemkey -alg PLACEHOLDER-KEM -out /tmp/server-kem
+.build/pqkemkey -alg PLACEHOLDER-KEM -out /tmp/client-kem
+
+.build/pqcertlab -alg Dilithium2 \
+  -pub /tmp/server-sig.pub -client-pub /tmp/client-sig.pub \
+  -kem-pub /tmp/server-kem.pub -client-kem-pub /tmp/client-kem.pub \
+  -kem-oid 1.3.6.1.4.1.54321.99.2 -out /tmp/kem-certs
+```
+
+- `.1.0`：KEM 公钥
+- `.1.4`：KEM 算法 OID
+- `.1.3` 仍只表示 PQ 签名算法
+
+TLS 侧对应 `KEMTLS_KEM_ALG` / `KEMTLS_KEM_KEY`。注意当前 KEM 共享密钥尚未进入
+`key_schedule`，仅完成了算法注册与握手路径接入。

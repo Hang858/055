@@ -46,8 +46,8 @@ tar -xzf "$BUNDLE/bin/go-kemtls-min.tgz" -C "$PREFIX/.build/go-kemtls"
 cp -a "$BUNDLE/src/kemtls/cloudflare_server" "$BUNDLE/src/kemtls/cloudflare_client" "$PREFIX/.build/extracted/"
 KGOROOT="$PREFIX/.build/go-kemtls"
 KGOCACHE="$PREFIX/.build/gocache-kemtls"
-( cd "$PREFIX/.build/extracted/cloudflare_server" && GOROOT="$KGOROOT" GOCACHE="$KGOCACHE" GOFLAGS="-buildvcs=false" "$KGOROOT/bin/go" build -o server-linux . )
-( cd "$PREFIX/.build/extracted/cloudflare_client" && GOROOT="$KGOROOT" GOCACHE="$KGOCACHE" GOFLAGS="-buildvcs=false" "$KGOROOT/bin/go" build -o client-linux . )
+( cd "$PREFIX/.build/extracted/cloudflare_server" && CGO_ENABLED=1 GOROOT="$KGOROOT" GOCACHE="$KGOCACHE" GOFLAGS="-buildvcs=false" "$KGOROOT/bin/go" build -o server-linux . )
+( cd "$PREFIX/.build/extracted/cloudflare_client" && CGO_ENABLED=1 GOROOT="$KGOROOT" GOCACHE="$KGOCACHE" GOFLAGS="-buildvcs=false" "$KGOROOT/bin/go" build -o client-linux . )
 
 # KEM 认证变体：ProtocolType 由 AKEX(11) 改为 KemCert_KEX(21)，供 TLS-1-13 四模式矩阵
 echo "构建 KEM 认证变体（Sig-Sig / Sig-KEM / KEM-Sig / KEM-KEM）"
@@ -56,8 +56,8 @@ cp -a "$PREFIX/.build/extracted/cloudflare_client" "$PREFIX/.build/extracted/clo
 sed -i 's/tls\.QuantumSupportAKEX/tls.QuantumSupportKemCert_KEX/' \
     "$PREFIX/.build/extracted/cloudflare_server_kem/server.go" \
     "$PREFIX/.build/extracted/cloudflare_client_kem/client.go"
-( cd "$PREFIX/.build/extracted/cloudflare_server_kem" && GOROOT="$KGOROOT" GOCACHE="$KGOCACHE" GOFLAGS="-buildvcs=false" "$KGOROOT/bin/go" build -o server-kem-linux . )
-( cd "$PREFIX/.build/extracted/cloudflare_client_kem" && GOROOT="$KGOROOT" GOCACHE="$KGOCACHE" GOFLAGS="-buildvcs=false" "$KGOROOT/bin/go" build -o client-kem-linux . )
+( cd "$PREFIX/.build/extracted/cloudflare_server_kem" && CGO_ENABLED=1 GOROOT="$KGOROOT" GOCACHE="$KGOCACHE" GOFLAGS="-buildvcs=false" "$KGOROOT/bin/go" build -o server-kem-linux . )
+( cd "$PREFIX/.build/extracted/cloudflare_client_kem" && CGO_ENABLED=1 GOROOT="$KGOROOT" GOCACHE="$KGOCACHE" GOFLAGS="-buildvcs=false" "$KGOROOT/bin/go" build -o client-kem-linux . )
 
 # 1.5-RTT 流程优化变体：ProtocolType 由 AKEX(11) 改为 SignCert_ServerKeyGen(13)
 echo "构建 ServerKeyGen 1.5-RTT 变体"
@@ -66,8 +66,8 @@ cp -a "$PREFIX/.build/extracted/cloudflare_client" "$PREFIX/.build/extracted/clo
 sed -i 's/tls\.QuantumSupportAKEX/tls.QuantumSupportSignCert_ServerKeyGen/' \
     "$PREFIX/.build/extracted/cloudflare_server_keygen/server.go" \
     "$PREFIX/.build/extracted/cloudflare_client_keygen/client.go"
-( cd "$PREFIX/.build/extracted/cloudflare_server_keygen" && GOROOT="$KGOROOT" GOCACHE="$KGOCACHE" GOFLAGS="-buildvcs=false" "$KGOROOT/bin/go" build -o server-keygen-linux . )
-( cd "$PREFIX/.build/extracted/cloudflare_client_keygen" && GOROOT="$KGOROOT" GOCACHE="$KGOCACHE" GOFLAGS="-buildvcs=false" "$KGOROOT/bin/go" build -o client-keygen-linux . )
+( cd "$PREFIX/.build/extracted/cloudflare_server_keygen" && CGO_ENABLED=1 GOROOT="$KGOROOT" GOCACHE="$KGOCACHE" GOFLAGS="-buildvcs=false" "$KGOROOT/bin/go" build -o server-keygen-linux . )
+( cd "$PREFIX/.build/extracted/cloudflare_client_keygen" && CGO_ENABLED=1 GOROOT="$KGOROOT" GOCACHE="$KGOCACHE" GOFLAGS="-buildvcs=false" "$KGOROOT/bin/go" build -o client-keygen-linux . )
 
 if [ "$USE_PREBUILT" = 0 ] && command -v gcc >/dev/null 2>&1 && command -v make >/dev/null 2>&1; then
     echo "[6/6] 在目标机重编二进制（非 HQC 静态；HQC 用私有 liboqs）"

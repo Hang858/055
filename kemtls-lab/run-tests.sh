@@ -11,7 +11,7 @@ GOROOT=${GOROOT:-$ROOT/.build/extracted/go_kemtls}
 GOMODCACHE=${GOMODCACHE:-$ROOT/.build/gomodcache-sm2auth}
 GOCACHE=${GOCACHE:-$ROOT/.build/gocache-kemtls-fix}
 export GOROOT GOMODCACHE GOCACHE
-export GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOFLAGS=-mod=mod
+export GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOFLAGS=-mod=mod CGO_ENABLED=1
 
 CERTS=$ROOT/packaging/tls-source/kemtls
 S=$CERTS/cloudflare_server/pqcerts

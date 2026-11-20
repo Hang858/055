@@ -78,6 +78,8 @@ func main() {
 		Certificates: []tls.Certificate{clientCert},
 		KEMTLSSigAlg: os.Getenv("KEMTLS_SIG_ALG"),
 		KEMTLSSigKey: os.Getenv("KEMTLS_SIG_KEY"),
+		KEMTLSKEMAlg: os.Getenv("KEMTLS_KEM_ALG"),
+		KEMTLSKEMKey: os.Getenv("KEMTLS_KEM_KEY"),
 	}
 
 	//start := time.Now()

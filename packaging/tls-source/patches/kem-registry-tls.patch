@@ -1,0 +1,1252 @@
+--- a/src/crypto/tls/common.go
++++ b/src/crypto/tls/common.go
+@@ -17,8 +17,10 @@
+ 	"crypto/sha512"
+ 	"crypto/tls/internal/fips140tls"
+ 	"crypto/x509"
++	"encoding/hex"
+ 	"errors"
+ 	"fmt"
++	"hash"
+ 	"internal/godebug"
+ 	"io"
+ 	"net"
+@@ -26,15 +28,13 @@
+ 	"strings"
+ 	"sync"
+ 	"time"
+-	"encoding/hex"
+-	"hash"
+ 	_ "unsafe" // for linkname
+ )
+ 
+ // 👈 这里拓展定义自己的交互流程
+-const extensionProtocolType = 0xFFF1 // 自定义编号，私有使用范围内，用来表示交互协议类型
+-const extensionPQPublicKey = 0xFE02  // 服务器抗量子公钥扩展
+-const extensionPQCiphertext = 0xFE03 // 服务器抗量子密文扩展
++const extensionProtocolType = 0xFFF1       // 自定义编号，私有使用范围内，用来表示交互协议类型
++const extensionPQPublicKey = 0xFE02        // 服务器抗量子公钥扩展
++const extensionPQCiphertext = 0xFE03       // 服务器抗量子密文扩展
+ const extensionProtocolTypeStrict = 0xFFF2 // 自定义编号，私有使用范围内，用来表示这个类型是不是强制的
+ 
+ const (
+@@ -47,7 +47,7 @@
+ 	QuantumSupportServerKeyGen = 3
+ 
+ 	// 👈 这些是表明认证层面是采用Sig证书还是KEM证书
+-	ClassicSign = 0
++	ClassicSign            = 0
+ 	QuantumSupportSignCert = 10
+ 	QuantumSupportKemCert  = 20
+ 
+@@ -89,7 +89,6 @@
+ 		return fmt.Sprintf("0x%04X", version)
+ 	}
+ }
+-
+ 
+ // 👈 用来调试hs.transcript值
+ func dumpTranscript(tag string, h hash.Hash) {
+@@ -1011,7 +1010,7 @@
+ 	autoSessionTicketKeys []ticketKey
+ 
+ 	//👈 这里定义协议交互类型
+-	ProtocolType uint16
++	ProtocolType       uint16
+ 	ProtocolTypeStrict uint16
+ 
+ 	// KEMTLSSigAlg/KEMTLSSigKey select the PQ signature algorithm and raw
+@@ -1019,6 +1018,11 @@
+ 	// values preserve the legacy Dilithium2 behavior.
+ 	KEMTLSSigAlg string
+ 	KEMTLSSigKey string
++
++	// KEMTLSKEMAlg/KEMTLSKEMKey select the KEM algorithm and raw private key
++	// used by the KEM-certificate path. Empty values keep Kyber768 behavior.
++	KEMTLSKEMAlg string
++	KEMTLSKEMKey string
+ }
+ 
+ // EncryptedClientHelloKey holds a private key that is associated
+--- a/src/crypto/tls/handshake_server_tls13.go
++++ b/src/crypto/tls/handshake_server_tls13.go
+@@ -119,6 +119,9 @@
+ 		if err := hs.sendServerCiphertext(); err != nil {
+ 			return err
+ 		}
++		if err := hs.sendSessionTickets(); err != nil {
++			return err
++		}
+ 	}
+ 	if err := hs.readClientFinished(); err != nil {
+ 		return err
+@@ -147,7 +150,7 @@
+ 	}
+ 
+ 	// 将消息序列化并发送给服务器
+-	if _, err := hs.c.writeHandshakeRecord(pqMsg, nil); err != nil {
++	if _, err := hs.c.writeHandshakeRecord(pqMsg, hs.transcript); err != nil {
+ 		return err
+ 	}
+ 
+@@ -1214,7 +1217,16 @@
+ func (hs *serverHandshakeStateTLS13) sendSessionTickets() error {
+ 	c := hs.c
+ 
+-	hs.clientFinished = hs.suite.finishedHash(c.in.trafficSecret, hs.transcript)
++	if (hs.protocoltype/10)*10 == QuantumSupportKemCert {
++		if len(hs.persistentssKEM) == 0 || len(hs.persistentssKEM_Client) == 0 {
++			c.sendAlert(alertInternalError)
++			return errors.New("tls: missing KEM secrets for client Finished")
++		}
++		hs.clientFinished = hs.suite.kemFinishedHash(
++			c.in.trafficSecret, hs.persistentssKEM, hs.persistentssKEM_Client, hs.transcript)
++	} else {
++		hs.clientFinished = hs.suite.finishedHash(c.in.trafficSecret, hs.transcript)
++	}
+ 	finishedMsg := &finishedMsg{
+ 		verifyData: hs.clientFinished,
+ 	}
+@@ -1384,7 +1396,17 @@
+ 
+ 		// 👈 这里读取client端加密的密文
+ 		if (hs.protocoltype/10)*10 == QuantumSupportKemCert {
+-			hs.persistentssKEM, _ = myx509.QuantumDecryptionWithLocalKey(certMsg.persistentCiphertextKEM, "pqcerts/end-entity-pq-key-KEM.bin")
++			kemKey := c.config.KEMTLSKEMKey
++			if kemKey == "" {
++				kemKey = "pqcerts/end-entity-pq-key-KEM.bin"
++			}
++			ss, err := myx509.QuantumDecryptionWithLocalKeyAlg(
++				certMsg.persistentCiphertextKEM, kemKey, c.config.KEMTLSKEMAlg)
++			if err != nil {
++				c.sendAlert(alertDecryptError)
++				return fmt.Errorf("tls: KEM client certificate decapsulation failed: %w", err)
++			}
++			hs.persistentssKEM = ss
+ 		}
+ 		// 👈 向client端这里发送密文只有两种情况，双方都是KEM证书，或者对方是KEM证书并且自己这边还是不强制执行自己的，并且还没有退化到经典TLS协议
+ 		if ((hs.protocoltype/10)*10 == QuantumSupportKemCert && (hs.clientHello.ProtocolType/10)*10 == QuantumSupportKemCert) || ((hs.clientHello.ProtocolType/10)*10 == QuantumSupportKemCert && hs.protocoltype != ClassicAKE) {
+@@ -1405,17 +1427,23 @@
+ 				certs[i] = cert
+ 			}
+ 
+-			ciphertextKEM, ss, _ := myx509.EncryptionFromCert(certs[0])
++			ciphertextKEM, ss, err := myx509.EncryptionFromCert(certs[0])
++			if err != nil {
++				c.sendAlert(alertBadCertificate)
++				return fmt.Errorf("tls: KEM encapsulation to client certificate failed: %w", err)
++			}
+ 			hs.persistentCiphertextKEM = ciphertextKEM
+-			hs.persistentssKEM = ss
++			hs.persistentssKEM_Client = ss
+ 		}
+ 
+ 	}
+ 
+ 	// If we waited until the client certificates to send session tickets, we
+ 	// are ready to do it now.
+-	if err := hs.sendSessionTickets(); err != nil {
+-		return err
++	if (hs.protocoltype/10)*10 != QuantumSupportKemCert {
++		if err := hs.sendSessionTickets(); err != nil {
++			return err
++		}
+ 	}
+ 
+ 	return nil
+--- a/src/crypto/tls/handshake_client_tls13.go
++++ b/src/crypto/tls/handshake_client_tls13.go
+@@ -795,7 +795,11 @@
+ 			certs[i] = cert
+ 		}
+ 
+-		ciphertextKEM, ss, _ := myx509.EncryptionFromCert(certs[0])
++		ciphertextKEM, ss, err := myx509.EncryptionFromCert(certs[0])
++		if err != nil {
++			c.sendAlert(alertBadCertificate)
++			return fmt.Errorf("tls: KEM encapsulation to server certificate failed: %w", err)
++		}
+ 		hs.persistentCiphertextKEM = ciphertextKEM
+ 		hs.persistentssKEM = ss
+ 	}
+@@ -1043,7 +1047,7 @@
+ 
+ 		// 读取客户端的 PQ 密钥交换消息
+ 		log.Println("等待抗量子密文信息")
+-		msg, err := hs.c.readHandshake(nil)
++		msg, err := hs.c.readHandshake(hs.transcript)
+ 		if err != nil {
+ 			return err
+ 		}
+@@ -1054,15 +1058,30 @@
+ 			c.sendAlert(alertUnexpectedMessage)
+ 			return unexpectedMessageError(pqKeyExchange, msg)
+ 		}
+-		// 👈 这里需要去掉前四个byte
+-		pqKeyExchange.ciphertext = pqKeyExchange.ciphertext[4 : kyber768.CiphertextSize+4]
+-
+-		// 使用服务器私钥解密客户端发送的密文
+-		hs.persistentssKEM, _ = myx509.QuantumDecryptionWithLocalKey(pqKeyExchange.ciphertext, "pqcerts/end-entity-pq-key-KEM.bin")
++		// 去掉 1 字节类型 + 3 字节长度，再按实际长度解封装。
++		if len(pqKeyExchange.ciphertext) < 4 {
++			c.sendAlert(alertIllegalParameter)
++			return errors.New("tls: invalid PQ persistent ciphertext")
++		}
++		ctLen := int(pqKeyExchange.ciphertext[1])<<16 |
++			int(pqKeyExchange.ciphertext[2])<<8 |
++			int(pqKeyExchange.ciphertext[3])
++		if len(pqKeyExchange.ciphertext) != 4+ctLen {
++			c.sendAlert(alertIllegalParameter)
++			return errors.New("tls: invalid PQ persistent ciphertext length")
++		}
++		ct := pqKeyExchange.ciphertext[4:]
++
++		kemKey := c.config.KEMTLSKEMKey
++		if kemKey == "" {
++			kemKey = "pqcerts/end-entity-pq-key-KEM.bin"
++		}
++		ss, err := myx509.QuantumDecryptionWithLocalKeyAlg(ct, kemKey, c.config.KEMTLSKEMAlg)
+ 		if err != nil {
+-			c.sendAlert(alertIllegalParameter)
+-			return errors.New("tls: invalid PQ key exchange")
+-		}
++			c.sendAlert(alertDecryptError)
++			return fmt.Errorf("tls: KEM server ciphertext decapsulation failed: %w", err)
++		}
++		hs.persistentssKEM_Client = ss
+ 
+ 	}
+ 
+@@ -1072,8 +1091,17 @@
+ func (hs *clientHandshakeStateTLS13) sendClientFinished() error {
+ 	c := hs.c
+ 
++	verifyData := hs.suite.finishedHash(c.out.trafficSecret, hs.transcript)
++	if (hs.protocoltype/10)*10 == QuantumSupportKemCert {
++		if len(hs.persistentssKEM) == 0 || len(hs.persistentssKEM_Client) == 0 {
++			c.sendAlert(alertInternalError)
++			return errors.New("tls: missing KEM secrets for client Finished")
++		}
++		verifyData = hs.suite.kemFinishedHash(
++			c.out.trafficSecret, hs.persistentssKEM, hs.persistentssKEM_Client, hs.transcript)
++	}
+ 	finished := &finishedMsg{
+-		verifyData: hs.suite.finishedHash(c.out.trafficSecret, hs.transcript),
++		verifyData: verifyData,
+ 	}
+ 
+ 	if _, err := hs.c.writeHandshakeRecord(finished, hs.transcript); err != nil {
+--- a/src/crypto/tls/key_schedule.go
++++ b/src/crypto/tls/key_schedule.go
+@@ -35,6 +35,23 @@
+ // selection.
+ func (c *cipherSuiteTLS13) finishedHash(baseKey []byte, transcript hash.Hash) []byte {
+ 	finishedKey := tls13.ExpandLabel(c.hash.New, baseKey, "finished", nil, c.hash.Size())
++	verifyData := hmac.New(c.hash.New, finishedKey)
++	verifyData.Write(transcript.Sum(nil))
++	return verifyData.Sum(nil)
++}
++
++// kemFinishedHash binds both KEM certificate secrets to the client Finished.
++// It is used only in the private KEM-certificate mode; the application traffic
++// keys remain the standard TLS 1.3 ECDHE-derived keys.
++func (c *cipherSuiteTLS13) kemFinishedHash(baseKey, ssServer, ssClient []byte, transcript hash.Hash) []byte {
++	h := c.hash.New()
++	h.Write([]byte("KEMTLS client finished"))
++	h.Write(ssServer)
++	h.Write(ssClient)
++	mac := hmac.New(c.hash.New, baseKey)
++	mac.Write(h.Sum(nil))
++	mixed := mac.Sum(nil)
++	finishedKey := tls13.ExpandLabel(c.hash.New, mixed, "finished", nil, c.hash.Size())
+ 	verifyData := hmac.New(c.hash.New, finishedKey)
+ 	verifyData.Write(transcript.Sum(nil))
+ 	return verifyData.Sum(nil)
+--- a/src/crypto/myx509/myx509.go
++++ b/src/crypto/myx509/myx509.go
+@@ -2,6 +2,7 @@
+ 
+ import (
+ 	"crypto"
++	"crypto/pq"
+ 	"crypto/rand"
+ 	"crypto/rsa"
+ 	"crypto/sha256"
+@@ -33,6 +34,9 @@
+ 	// OIDQuantumAlgorithm tags the PQ signature algorithm for a certificate.
+ 	// Older certificates do not carry it and default to Dilithium2.
+ 	OIDQuantumAlgorithm = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 1, 3}
++	// OIDQuantumKEMAlgorithm tags the KEM algorithm in a KEM certificate.
++	// Older certificates do not carry it and default to Kyber768.
++	OIDQuantumKEMAlgorithm = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 1, 4}
+ )
+ 
+ var pqSigAlgOIDs = map[string]asn1.ObjectIdentifier{
+@@ -1984,6 +1988,34 @@
+ 	return ss, nil
+ }
+ 
++// QuantumDecryptionWithLocalKeyAlg decapsulates with the named KEM.  An empty
++// name keeps the legacy Kyber768 behavior used by older certificates.
++func QuantumDecryptionWithLocalKeyAlg(kem []byte, keyType, algName string) ([]byte, error) {
++	if algName == "" {
++		return QuantumDecryptionWithLocalKey(kem, keyType)
++	}
++	alg, err := pq.Lookup(algName)
++	if err != nil {
++		return nil, fmt.Errorf("KEM 算法未注册: %s: %w", algName, err)
++	}
++	if alg.Kind() != pq.KindKEM {
++		return nil, fmt.Errorf("算法 %s 不是 KEM", algName)
++	}
++	raw, err := os.ReadFile(keyType)
++	if err != nil {
++		return nil, fmt.Errorf("读取 KEM 私钥文件失败: %v", err)
++	}
++	priv, err := alg.ParsePrivateKey(raw)
++	if err != nil {
++		return nil, fmt.Errorf("解析 KEM 私钥失败: %v", err)
++	}
++	ss, err := alg.Decapsulate(priv, kem)
++	if err != nil {
++		return nil, fmt.Errorf("KEM 解封装失败: %v", err)
++	}
++	return ss, nil
++}
++
+ // VerifyQuantumSignatureFromCert 从证书中提取抗量子公钥并验证签名
+ // 参数：
+ //
+@@ -2235,10 +2267,75 @@
+ 	return EncryptionFromCert(cert)
+ }
+ 
++// KEMAlgorithmFromCert returns the KEM algorithm name from extension .1.4.
++// An empty name means the legacy Kyber768 certificate without an algorithm tag.
++func KEMAlgorithmFromCert(cert *x509.Certificate) (string, error) {
++	if cert == nil {
++		return "", fmt.Errorf("证书为空")
++	}
++	for _, ext := range cert.Extensions {
++		if !ext.Id.Equal(OIDQuantumKEMAlgorithm) {
++			continue
++		}
++		var oid asn1.ObjectIdentifier
++		rest, err := asn1.Unmarshal(ext.Value, &oid)
++		if err != nil || len(rest) != 0 {
++			return "", fmt.Errorf("解析 KEM 算法扩展失败: %v", err)
++		}
++		alg, err := pq.ByOID(oid)
++		if err != nil {
++			return "", fmt.Errorf("未知 KEM 算法 OID %s: %w", oid, err)
++		}
++		if alg.Kind() != pq.KindKEM {
++			return "", fmt.Errorf("OID %s 不是 KEM 算法", oid)
++		}
++		return alg.Name(), nil
++	}
++	return "", nil
++}
++
++func encryptionFromCertWithPQ(cert *x509.Certificate, algName string) ([]byte, []byte, error) {
++	alg, err := pq.Lookup(algName)
++	if err != nil {
++		return nil, nil, fmt.Errorf("KEM 算法未注册: %s: %w", algName, err)
++	}
++	if alg.Kind() != pq.KindKEM {
++		return nil, nil, fmt.Errorf("算法 %s 不是 KEM", algName)
++	}
++	var raw []byte
++	for _, ext := range cert.Extensions {
++		if ext.Id.Equal(OIDQuantumKEMPublicKey) {
++			raw = ext.Value
++			break
++		}
++	}
++	if len(raw) == 0 {
++		return nil, nil, fmt.Errorf("证书中未找到 KEM 公钥扩展 .1.0")
++	}
++	pub, err := alg.ParsePublicKey(raw)
++	if err != nil {
++		return nil, nil, fmt.Errorf("解析 KEM 公钥失败: %w", err)
++	}
++	ct, ss, err := alg.Encapsulate(pub)
++	if err != nil {
++		return nil, nil, fmt.Errorf("KEM 封装失败: %w", err)
++	}
++	return ct, ss, nil
++}
++
+ func EncryptionFromCert(cert *x509.Certificate) ([]byte, []byte, error) {
+ 	if cert == nil {
+ 		return nil, nil, fmt.Errorf("证书为空")
+ 	}
++	algName, err := KEMAlgorithmFromCert(cert)
++	if err != nil {
++		return nil, nil, err
++	}
++	if algName != "" {
++		return encryptionFromCertWithPQ(cert, algName)
++	}
++
++	// Backward compatibility: certificates without .1.4 use Kyber768.
+ 	tmp := kyber768.Scheme()
+ 	var quantumPublicKey *kyber768.PublicKey
+ 	for _, ext := range cert.Extensions {
+@@ -2247,8 +2344,6 @@
+ 			if err != nil {
+ 				return nil, nil, fmt.Errorf("量子公钥反序列化失败: %w", err)
+ 			}
+-
+-			// 再断言为具体类型（注意是 *kyber768.PublicKey）
+ 			pk, ok := pkGeneric.(*kyber768.PublicKey)
+ 			if !ok {
+ 				return nil, nil, fmt.Errorf("公钥不是 Kyber768 类型: %T", pkGeneric)
+@@ -2256,12 +2351,13 @@
+ 			quantumPublicKey = pk
+ 		}
+ 	}
++	if quantumPublicKey == nil {
++		return nil, nil, fmt.Errorf("证书中未找到 KEM 公钥扩展 .1.0")
++	}
+ 	ciphertextKEM, ss, err := tmp.Encapsulate(quantumPublicKey)
+-
+ 	if err != nil {
+ 		return nil, nil, fmt.Errorf("KEM 封装失败: %w", err)
+ 	}
+-
+ 	return ciphertextKEM, ss, nil
+ }
+ 
+--- /dev/null
++++ b/src/crypto/pq/pq.go
+@@ -0,0 +1,359 @@
++// Package pq is the single Go entry point for C-implemented PQ algorithms.
++//
++// The C side owns algorithm implementations and the registry; this package
++// only exposes pq_alg_lookup() and the pq_alg descriptor to Go.  Callers do
++// not switch on algorithm names: they call Lookup(name) and use the returned
++// Signer/KEM methods.
++package pq
++
++/*
++#cgo CFLAGS: -I${SRCDIR}/include -std=c11
++#include "pq_alg.h"
++#include <stdlib.h>
++
++static int pqc_call_keygen(const pq_alg *a, uint8_t *pk, uint8_t *sk) {
++    if (a == NULL || a->keygen == NULL) return PQ_ERR_NOTIMPL;
++    return a->keygen(pk, sk);
++}
++static int pqc_call_pub_from_sk(const pq_alg *a, const uint8_t *sk, uint8_t *pk) {
++    if (a == NULL || a->pub_from_sk == NULL) return PQ_ERR_NOTIMPL;
++    return a->pub_from_sk(sk, pk);
++}
++static int pqc_call_sign(const pq_alg *a, const uint8_t *sk,
++                         const uint8_t *msg, size_t msg_len,
++                         uint8_t *sig, size_t sig_cap) {
++    if (a == NULL || a->sign == NULL) return PQ_ERR_NOTIMPL;
++    return a->sign(sk, msg, msg_len, sig, sig_cap);
++}
++static int pqc_call_verify(const pq_alg *a, const uint8_t *pk,
++                           const uint8_t *msg, size_t msg_len,
++                           const uint8_t *sig, size_t sig_len) {
++    if (a == NULL || a->verify == NULL) return PQ_ERR_NOTIMPL;
++    return a->verify(pk, msg, msg_len, sig, sig_len);
++}
++static int pqc_call_encaps(const pq_alg *a, const uint8_t *pk,
++                           uint8_t *ct, size_t ct_cap,
++                           uint8_t *ss, size_t ss_cap) {
++    if (a == NULL || a->encaps == NULL) return PQ_ERR_NOTIMPL;
++    return a->encaps(pk, ct, ct_cap, ss, ss_cap);
++}
++static int pqc_call_decaps(const pq_alg *a, const uint8_t *sk,
++                           const uint8_t *ct, size_t ct_len,
++                           uint8_t *ss, size_t ss_cap) {
++    if (a == NULL || a->decaps == NULL) return PQ_ERR_NOTIMPL;
++    return a->decaps(sk, ct, ct_len, ss, ss_cap);
++}
++*/
++import "C"
++
++import (
++	"encoding/asn1"
++	"errors"
++	"fmt"
++	"strconv"
++	"strings"
++	"unsafe"
++)
++
++type Kind uint32
++
++const (
++	KindSig Kind = 1
++	KindKEM Kind = 2
++)
++
++type Input uint32
++
++const (
++	InputMessage Input = 0
++	InputDigest  Input = 1
++)
++
++var (
++	ErrNotFound       = errors.New("pqc: algorithm not found")
++	ErrNotImplemented = errors.New("pqc: algorithm is a placeholder or not linked")
++	ErrKind           = errors.New("pqc: wrong algorithm kind")
++	ErrInvalidKey     = errors.New("pqc: key does not belong to algorithm")
++	ErrLength         = errors.New("pqc: invalid key or signature length")
++)
++
++// Algorithm is a view of a C pq_alg descriptor.  The descriptor is static (or
++// owned by a plugin for the process lifetime); no Go finalizer is needed.
++type Algorithm struct {
++	p *C.pq_alg
++}
++
++func wrap(p *C.pq_alg) *Algorithm {
++	if p == nil {
++		return nil
++	}
++	return &Algorithm{p: p}
++}
++
++// Lookup is the single registration entry.  It returns placeholders too:
++// call Available to distinguish "known but not linked" from "usable".
++func Lookup(name string) (*Algorithm, error) {
++	cname := C.CString(name)
++	defer C.free(unsafe.Pointer(cname))
++	a := wrap(C.pq_alg_lookup(cname))
++	if a == nil {
++		return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
++	}
++	return a, nil
++}
++
++func ByTLSCode(code uint16) (*Algorithm, error) {
++	a := wrap(C.pq_alg_by_tls_code(C.uint16_t(code)))
++	if a == nil {
++		return nil, fmt.Errorf("%w: tls code 0x%04x", ErrNotFound, code)
++	}
++	return a, nil
++}
++
++func All() []*Algorithm {
++	n := int(C.pq_alg_count())
++	out := make([]*Algorithm, 0, n)
++	for i := 0; i < n; i++ {
++		if a := wrap(C.pq_alg_at(C.size_t(i))); a != nil {
++			out = append(out, a)
++		}
++	}
++	return out
++}
++
++// ByOID resolves the algorithm OID stored in a certificate extension.
++func ByOID(oid asn1.ObjectIdentifier) (*Algorithm, error) {
++	for _, a := range All() {
++		if a.OID().Equal(oid) {
++			return a, nil
++		}
++	}
++	return nil, fmt.Errorf("%w: oid %s", ErrNotFound, oid.String())
++}
++
++func (a *Algorithm) Name() string    { return C.GoString(a.p.name) }
++func (a *Algorithm) Version() string { return C.GoString(a.p.version) }
++func (a *Algorithm) TLSCode() uint16 { return uint16(a.p.tls_code) }
++func (a *Algorithm) Kind() Kind      { return Kind(a.p.kind) }
++func (a *Algorithm) Input() Input    { return Input(a.p.input) }
++func (a *Algorithm) IsPlaceholder() bool {
++	return a.p.flags&C.uint32_t(1) != 0
++}
++func (a *Algorithm) Available() bool       { return C.pq_alg_available(a.p) != 0 }
++func (a *Algorithm) PublicKeySize() int    { return int(a.p.pk_len) }
++func (a *Algorithm) PrivateKeySize() int   { return int(a.p.sk_len) }
++func (a *Algorithm) SignatureSize() int    { return int(a.p.sig_len) }
++func (a *Algorithm) CiphertextSize() int   { return int(a.p.ct_len) }
++func (a *Algorithm) SharedSecretSize() int { return int(a.p.ss_len) }
++
++func (a *Algorithm) OID() asn1.ObjectIdentifier {
++	oid, err := parseOID(C.GoString(a.p.oid))
++	if err != nil {
++		return nil
++	}
++	return oid
++}
++
++func (a *Algorithm) TLSName() string {
++	if a.TLSCode() == 0 {
++		return a.Name()
++	}
++	return fmt.Sprintf("%s(0x%04x)", a.Name(), a.TLSCode())
++}
++
++func (a *Algorithm) String() string {
++	return fmt.Sprintf("%s kind=%d tls=0x%04x oid=%s avail=%t",
++		a.Name(), a.Kind(), a.TLSCode(), C.GoString(a.p.oid), a.Available())
++}
++
++type KeyPair struct {
++	Public  *PublicKey
++	Private *PrivateKey
++}
++
++type PublicKey struct {
++	Algorithm *Algorithm
++	Raw       []byte
++}
++
++type PrivateKey struct {
++	Algorithm *Algorithm
++	Raw       []byte
++}
++
++func (a *Algorithm) GenerateKey() (*KeyPair, error) {
++	if !a.Available() {
++		return nil, ErrNotImplemented
++	}
++	pkLen, skLen := a.PublicKeySize(), a.PrivateKeySize()
++	if pkLen <= 0 || skLen <= 0 {
++		return nil, fmt.Errorf("pqc: %s has no key sizes", a.Name())
++	}
++	pk := make([]byte, pkLen)
++	sk := make([]byte, skLen)
++	if st := C.pqc_call_keygen(a.p, cptr(pk), cptr(sk)); st != C.PQ_OK {
++		return nil, statusErr("keygen", st)
++	}
++	return &KeyPair{
++		Public:  &PublicKey{Algorithm: a, Raw: pk},
++		Private: &PrivateKey{Algorithm: a, Raw: sk},
++	}, nil
++}
++
++// DerivePublic calls the C pub_from_sk hook; keys must be deterministic bytes.
++func (a *Algorithm) DerivePublic(priv *PrivateKey) (*PublicKey, error) {
++	if err := a.checkPrivate(priv); err != nil {
++		return nil, err
++	}
++	pk := make([]byte, a.PublicKeySize())
++	if st := C.pqc_call_pub_from_sk(a.p, cptr(priv.Raw), cptr(pk)); st != C.PQ_OK {
++		return nil, statusErr("pub_from_sk", st)
++	}
++	return &PublicKey{Algorithm: a, Raw: pk}, nil
++}
++
++func (a *Algorithm) ParsePublicKey(raw []byte) (*PublicKey, error) {
++	if a.Kind() != KindSig && a.Kind() != KindKEM {
++		return nil, ErrKind
++	}
++	if len(raw) != a.PublicKeySize() {
++		return nil, fmt.Errorf("%w: public key %d != %d", ErrLength, len(raw), a.PublicKeySize())
++	}
++	return &PublicKey{Algorithm: a, Raw: append([]byte(nil), raw...)}, nil
++}
++
++func (a *Algorithm) ParsePrivateKey(raw []byte) (*PrivateKey, error) {
++	if len(raw) != a.PrivateKeySize() {
++		return nil, fmt.Errorf("%w: private key %d != %d", ErrLength, len(raw), a.PrivateKeySize())
++	}
++	return &PrivateKey{Algorithm: a, Raw: append([]byte(nil), raw...)}, nil
++}
++
++// Sign signs digest exactly as passed.  The TLS stack passes the SHA-512
++// CertificateVerify digest; the C implementation must not hash it again.
++func (a *Algorithm) Sign(priv *PrivateKey, digest []byte) ([]byte, error) {
++	if a.Kind() != KindSig {
++		return nil, ErrKind
++	}
++	if !a.Available() {
++		return nil, ErrNotImplemented
++	}
++	if err := a.checkPrivate(priv); err != nil {
++		return nil, err
++	}
++	sig := make([]byte, a.SignatureSize())
++	if st := C.pqc_call_sign(a.p, cptr(priv.Raw), cptr(digest),
++		C.size_t(len(digest)), cptr(sig), C.size_t(len(sig))); st != C.PQ_OK {
++		return nil, statusErr("sign", st)
++	}
++	return sig, nil
++}
++
++func (a *Algorithm) Verify(pub *PublicKey, digest, sig []byte) error {
++	if a.Kind() != KindSig {
++		return ErrKind
++	}
++	if !a.Available() {
++		return ErrNotImplemented
++	}
++	if pub == nil || pub.Algorithm == nil || pub.Algorithm.Name() != a.Name() ||
++		len(pub.Raw) != a.PublicKeySize() {
++		return ErrInvalidKey
++	}
++	if len(sig) != a.SignatureSize() {
++		return fmt.Errorf("%w: signature %d != %d", ErrLength, len(sig), a.SignatureSize())
++	}
++	if st := C.pqc_call_verify(a.p, cptr(pub.Raw), cptr(digest),
++		C.size_t(len(digest)), cptr(sig), C.size_t(len(sig))); st != C.PQ_OK {
++		return statusErr("verify", st)
++	}
++	return nil
++}
++
++func (a *Algorithm) Encapsulate(pub *PublicKey) (ct, ss []byte, err error) {
++	if a.Kind() != KindKEM {
++		return nil, nil, ErrKind
++	}
++	if !a.Available() {
++		return nil, nil, ErrNotImplemented
++	}
++	if pub == nil || pub.Algorithm == nil || pub.Algorithm.Name() != a.Name() ||
++		len(pub.Raw) != a.PublicKeySize() {
++		return nil, nil, ErrInvalidKey
++	}
++	ct = make([]byte, a.CiphertextSize())
++	ss = make([]byte, a.SharedSecretSize())
++	if st := C.pqc_call_encaps(a.p, cptr(pub.Raw),
++		cptr(ct), C.size_t(len(ct)), cptr(ss), C.size_t(len(ss))); st != C.PQ_OK {
++		return nil, nil, statusErr("encaps", st)
++	}
++	return ct, ss, nil
++}
++
++func (a *Algorithm) Decapsulate(priv *PrivateKey, ct []byte) ([]byte, error) {
++	if a.Kind() != KindKEM {
++		return nil, ErrKind
++	}
++	if !a.Available() {
++		return nil, ErrNotImplemented
++	}
++	if err := a.checkPrivate(priv); err != nil {
++		return nil, err
++	}
++	if len(ct) != a.CiphertextSize() {
++		return nil, fmt.Errorf("%w: ciphertext %d != %d", ErrLength, len(ct), a.CiphertextSize())
++	}
++	ss := make([]byte, a.SharedSecretSize())
++	if st := C.pqc_call_decaps(a.p, cptr(priv.Raw), cptr(ct),
++		C.size_t(len(ct)), cptr(ss), C.size_t(len(ss))); st != C.PQ_OK {
++		return nil, statusErr("decaps", st)
++	}
++	return ss, nil
++}
++
++func (a *Algorithm) checkPrivate(priv *PrivateKey) error {
++	if priv == nil || priv.Algorithm == nil || priv.Algorithm.Name() != a.Name() ||
++		len(priv.Raw) != a.PrivateKeySize() {
++		return ErrInvalidKey
++	}
++	return nil
++}
++
++func cptr(b []byte) *C.uint8_t {
++	if len(b) == 0 {
++		return nil
++	}
++	return (*C.uint8_t)(unsafe.Pointer(&b[0]))
++}
++
++func statusErr(op string, st C.int) error {
++	switch st {
++	case C.PQ_OK:
++		return nil
++	case C.PQ_ERR_NOTIMPL:
++		return fmt.Errorf("%s: %w", op, ErrNotImplemented)
++	case C.PQ_ERR_VERIFY:
++		return fmt.Errorf("%s: verification failed", op)
++	default:
++		return fmt.Errorf("%s: %s (%d)", op, C.GoString(C.pq_status_string(st)), int(st))
++	}
++}
++
++func parseOID(s string) (asn1.ObjectIdentifier, error) {
++	parts := strings.Split(s, ".")
++	oid := make(asn1.ObjectIdentifier, 0, len(parts))
++	for _, p := range parts {
++		if p == "" {
++			return nil, fmt.Errorf("pqc: empty OID component in %q", s)
++		}
++		n, err := strconv.Atoi(p)
++		if err != nil || n < 0 {
++			return nil, fmt.Errorf("pqc: invalid OID %q", s)
++		}
++		oid = append(oid, n)
++	}
++	if len(oid) < 2 {
++		return nil, fmt.Errorf("pqc: OID %q has too few components", s)
++	}
++	return oid, nil
++}
+--- /dev/null
++++ b/src/crypto/pq/pq_bit_placeholder.c
+@@ -0,0 +1,31 @@
++/* Placeholder descriptors.  Replace this file with the real BiT adapter
++ * (same symbol name pq_bit) when the C implementation arrives. */
++#include "pq_alg.h"
++
++/*
++ * Placeholder descriptors for algorithms whose C implementation is not linked
++ * yet.  They are visible through the registry (so configuration and tests can
++ * be written now) but pq_alg_available() returns false and every operation
++ * returns PQ_ERR_NOTIMPL.
++ */
++const pq_alg pq_bit = {
++    .abi_version = PQ_ALG_ABI_VERSION,
++    .kind = PQ_KIND_SIG,
++    .input = PQ_INPUT_DIGEST,
++    .flags = PQ_FLAG_PLACEHOLDER,
++    .name = "BiT",
++    .oid = "1.3.6.1.4.1.54321.22.1", /* TODO: confirm vendor OID before issue */
++    .tls_code = 0xFE20u,             /* TODO: confirm private code point */
++    .version = "placeholder",
++};
++
++const pq_alg pq_kem_template = {
++    .abi_version = PQ_ALG_ABI_VERSION,
++    .kind = PQ_KIND_KEM,
++    .input = PQ_INPUT_MESSAGE,
++    .flags = PQ_FLAG_PLACEHOLDER,
++    .name = "KEM-TEMPLATE",
++    .oid = "1.3.6.1.4.1.54321.22.2",
++    .tls_code = 0,
++    .version = "placeholder",
++};
+--- /dev/null
++++ b/src/crypto/pq/pq_placeholder.c
+@@ -0,0 +1,157 @@
++/*
++ * Toy algorithms used only to exercise the registry, cgo bridge and tests.
++ * They are NOT cryptographic and must never be enabled in a real TLS profile.
++ */
++#include "pq_alg.h"
++
++#include <string.h>
++
++#define TOY_PK_LEN 32u
++#define TOY_SK_LEN 32u
++#define TOY_SIG_LEN 64u
++#define TOY_CT_LEN 32u
++#define TOY_SS_LEN 32u
++
++static void toy_hash(const uint8_t *a, size_t alen,
++                     const uint8_t *b, size_t blen,
++                     uint8_t out[32]) {
++    uint64_t h = 1469598103934665603ULL;
++    size_t i;
++    for (i = 0; i < alen; i++) {
++        h = (h ^ a[i]) * 1099511628211ULL;
++    }
++    for (i = 0; i < blen; i++) {
++        h = (h ^ b[i]) * 1099511628211ULL;
++    }
++    for (i = 0; i < 32; i++) {
++        h ^= h >> 33;
++        h *= 0xff51afd7ed558ccdULL;
++        h ^= h >> 33;
++        out[i] = (uint8_t)(h >> (8 * (i % 8)));
++    }
++}
++
++static int toy_keygen(uint8_t *pk, uint8_t *sk) {
++    size_t i;
++    if (pk == NULL || sk == NULL) {
++        return PQ_ERR_INVALID;
++    }
++    for (i = 0; i < TOY_PK_LEN; i++) {
++        pk[i] = (uint8_t)(0x11u + 7u * i);
++        sk[i] = pk[i];
++    }
++    return PQ_OK;
++}
++
++static int toy_pub_from_sk(const uint8_t *sk, uint8_t *pk) {
++    if (sk == NULL || pk == NULL) {
++        return PQ_ERR_INVALID;
++    }
++    memcpy(pk, sk, TOY_PK_LEN);
++    return PQ_OK;
++}
++
++static int toy_sign(const uint8_t *sk,
++                    const uint8_t *msg, size_t msg_len,
++                    uint8_t *sig, size_t sig_cap) {
++    uint8_t h[32];
++    size_t i;
++    if (sk == NULL || (msg == NULL && msg_len != 0) || sig == NULL) {
++        return PQ_ERR_INVALID;
++    }
++    if (sig_cap < TOY_SIG_LEN) {
++        return PQ_ERR_BUFFER;
++    }
++    toy_hash(sk, TOY_SK_LEN, msg, msg_len, h);
++    for (i = 0; i < TOY_SIG_LEN; i++) {
++        sig[i] = (uint8_t)(h[i % 32] ^ sk[i % 32] ^ 0x5au);
++    }
++    return PQ_OK;
++}
++
++static int toy_verify(const uint8_t *pk,
++                      const uint8_t *msg, size_t msg_len,
++                      const uint8_t *sig, size_t sig_len) {
++    uint8_t h[32];
++    uint8_t diff = 0;
++    size_t i;
++    if (pk == NULL || (msg == NULL && msg_len != 0) || sig == NULL) {
++        return PQ_ERR_INVALID;
++    }
++    if (sig_len != TOY_SIG_LEN) {
++        return PQ_ERR_VERIFY;
++    }
++    toy_hash(pk, TOY_PK_LEN, msg, msg_len, h);
++    for (i = 0; i < TOY_SIG_LEN; i++) {
++        uint8_t want = (uint8_t)(h[i % 32] ^ pk[i % 32] ^ 0x5au);
++        diff |= (uint8_t)(want ^ sig[i]);
++    }
++    return diff == 0 ? PQ_OK : PQ_ERR_VERIFY;
++}
++
++static int toy_encaps(const uint8_t *pk,
++                      uint8_t *ct, size_t ct_cap,
++                      uint8_t *ss, size_t ss_cap) {
++    size_t i;
++    if (pk == NULL || ct == NULL || ss == NULL) {
++        return PQ_ERR_INVALID;
++    }
++    if (ct_cap < TOY_CT_LEN || ss_cap < TOY_SS_LEN) {
++        return PQ_ERR_BUFFER;
++    }
++    for (i = 0; i < TOY_CT_LEN; i++) {
++        ct[i] = (uint8_t)(pk[i] ^ 0xa7u);
++    }
++    toy_hash(pk, TOY_PK_LEN, ct, TOY_CT_LEN, ss);
++    return PQ_OK;
++}
++
++static int toy_decaps(const uint8_t *sk,
++                      const uint8_t *ct, size_t ct_len,
++                      uint8_t *ss, size_t ss_cap) {
++    if (sk == NULL || ct == NULL || ss == NULL) {
++        return PQ_ERR_INVALID;
++    }
++    if (ct_len != TOY_CT_LEN || ss_cap < TOY_SS_LEN) {
++        return PQ_ERR_VERIFY;
++    }
++    toy_hash(sk, TOY_SK_LEN, ct, TOY_CT_LEN, ss);
++    return PQ_OK;
++}
++
++const pq_alg pq_placeholder_sig = {
++    .abi_version = PQ_ALG_ABI_VERSION,
++    .kind = PQ_KIND_SIG,
++    .input = PQ_INPUT_DIGEST,
++    .flags = 0,
++    .name = "PLACEHOLDER-SIG",
++    .oid = "1.3.6.1.4.1.54321.99.1",
++    .tls_code = 0xFE7Fu,
++    .version = "toy-1",
++    .pk_len = TOY_PK_LEN,
++    .sk_len = TOY_SK_LEN,
++    .sig_len = TOY_SIG_LEN,
++    .keygen = toy_keygen,
++    .pub_from_sk = toy_pub_from_sk,
++    .sign = toy_sign,
++    .verify = toy_verify,
++};
++
++const pq_alg pq_placeholder_kem = {
++    .abi_version = PQ_ALG_ABI_VERSION,
++    .kind = PQ_KIND_KEM,
++    .input = PQ_INPUT_MESSAGE,
++    .flags = 0,
++    .name = "PLACEHOLDER-KEM",
++    .oid = "1.3.6.1.4.1.54321.99.2",
++    .tls_code = 0,
++    .version = "toy-1",
++    .pk_len = TOY_PK_LEN,
++    .sk_len = TOY_SK_LEN,
++    .ct_len = TOY_CT_LEN,
++    .ss_len = TOY_SS_LEN,
++    .keygen = toy_keygen,
++    .pub_from_sk = toy_pub_from_sk,
++    .encaps = toy_encaps,
++    .decaps = toy_decaps,
++};
+--- /dev/null
++++ b/src/crypto/pq/pq_registry.c
+@@ -0,0 +1,152 @@
++#include "pq_alg.h"
++
++#include <string.h>
++
++/* Builtins are linked in.  To add an algorithm, define its descriptor in a
++ * .c file and add the symbol here; no TLS or Go code changes. */
++extern const pq_alg pq_bit;
++extern const pq_alg pq_kem_template;
++extern const pq_alg pq_placeholder_sig;
++extern const pq_alg pq_placeholder_kem;
++
++static const pq_alg *const pq_builtin[] = {
++    &pq_bit,
++    &pq_kem_template,
++    &pq_placeholder_sig,
++    &pq_placeholder_kem,
++};
++
++#define PQ_BUILTIN_COUNT (sizeof(pq_builtin) / sizeof(pq_builtin[0]))
++
++static const pq_alg *pq_dynamic[PQ_ALG_MAX];
++static size_t pq_dynamic_count;
++
++static int is_placeholder(const pq_alg *a) {
++    return a != NULL && (a->flags & PQ_FLAG_PLACEHOLDER) != 0;
++}
++
++static int valid_alg(const pq_alg *a) {
++    if (a == NULL || a->abi_version != PQ_ALG_ABI_VERSION) {
++        return 0;
++    }
++    if (a->name == NULL || a->name[0] == '\0' || a->oid == NULL) {
++        return 0;
++    }
++    if (a->kind != PQ_KIND_SIG && a->kind != PQ_KIND_KEM) {
++        return 0;
++    }
++    if (is_placeholder(a)) {
++        return 1;
++    }
++    if (a->keygen == NULL || a->pub_from_sk == NULL) {
++        return 0;
++    }
++    if (a->kind == PQ_KIND_SIG) {
++        return a->pk_len != 0 && a->sk_len != 0 && a->sig_len != 0 &&
++               a->sign != NULL && a->verify != NULL;
++    }
++    return a->pk_len != 0 && a->sk_len != 0 && a->ct_len != 0 &&
++           a->ss_len != 0 && a->encaps != NULL && a->decaps != NULL;
++}
++
++int pq_alg_available(const pq_alg *a) {
++    if (!valid_alg(a) || is_placeholder(a)) {
++        return 0;
++    }
++    return 1;
++}
++
++size_t pq_alg_count(void) {
++    return PQ_BUILTIN_COUNT + pq_dynamic_count;
++}
++
++const pq_alg *pq_alg_at(size_t index) {
++    if (index < PQ_BUILTIN_COUNT) {
++        return pq_builtin[index];
++    }
++    index -= PQ_BUILTIN_COUNT;
++    if (index >= pq_dynamic_count) {
++        return NULL;
++    }
++    return pq_dynamic[index];
++}
++
++const pq_alg *pq_alg_lookup(const char *name) {
++    size_t i;
++    if (name == NULL) {
++        return NULL;
++    }
++    for (i = 0; i < PQ_BUILTIN_COUNT; i++) {
++        if (strcmp(pq_builtin[i]->name, name) == 0) {
++            return pq_builtin[i];
++        }
++    }
++    for (i = 0; i < pq_dynamic_count; i++) {
++        if (strcmp(pq_dynamic[i]->name, name) == 0) {
++            return pq_dynamic[i];
++        }
++    }
++    return NULL;
++}
++
++const pq_alg *pq_alg_by_tls_code(uint16_t code) {
++    size_t i;
++    if (code == 0) {
++        return NULL;
++    }
++    for (i = 0; i < PQ_BUILTIN_COUNT; i++) {
++        if (pq_builtin[i]->kind == PQ_KIND_SIG &&
++            pq_builtin[i]->tls_code == code) {
++            return pq_builtin[i];
++        }
++    }
++    for (i = 0; i < pq_dynamic_count; i++) {
++        if (pq_dynamic[i]->kind == PQ_KIND_SIG &&
++            pq_dynamic[i]->tls_code == code) {
++            return pq_dynamic[i];
++        }
++    }
++    return NULL;
++}
++
++int pq_alg_register(const pq_alg *alg) {
++    size_t i;
++    if (!valid_alg(alg)) {
++        return PQ_ERR_INVALID;
++    }
++    if (pq_dynamic_count >= PQ_ALG_MAX) {
++        return PQ_ERR_NOMEM;
++    }
++    for (i = 0; i < PQ_BUILTIN_COUNT; i++) {
++        if (strcmp(pq_builtin[i]->name, alg->name) == 0) {
++            return PQ_ERR_DUPLICATE;
++        }
++        if (alg->tls_code != 0 && pq_builtin[i]->tls_code == alg->tls_code) {
++            return PQ_ERR_DUPLICATE;
++        }
++    }
++    for (i = 0; i < pq_dynamic_count; i++) {
++        if (strcmp(pq_dynamic[i]->name, alg->name) == 0) {
++            return PQ_ERR_DUPLICATE;
++        }
++        if (alg->tls_code != 0 && pq_dynamic[i]->tls_code == alg->tls_code) {
++            return PQ_ERR_DUPLICATE;
++        }
++    }
++    pq_dynamic[pq_dynamic_count++] = alg;
++    return PQ_OK;
++}
++
++const char *pq_status_string(int status) {
++    switch (status) {
++    case PQ_OK:              return "ok";
++    case PQ_ERR_INVALID:     return "invalid argument";
++    case PQ_ERR_BUFFER:      return "output buffer too small";
++    case PQ_ERR_NOTIMPL:     return "not implemented";
++    case PQ_ERR_VERIFY:      return "verification failed";
++    case PQ_ERR_DUPLICATE:   return "duplicate algorithm";
++    case PQ_ERR_NOMEM:       return "registry full";
++    case PQ_ERR_UNSUPPORTED: return "unsupported";
++    default:                 return "unknown error";
++    }
++}
+--- /dev/null
++++ b/src/crypto/pq/include/pq_alg.h
+@@ -0,0 +1,118 @@
++/*
++ * pq_alg.h - one C ABI for post-quantum signature and KEM algorithms.
++ *
++ * This header is the only contract between the C algorithm implementations
++ * (BiT, later KEMs) and the Go/TLS layer.  Adding an algorithm must not
++ * require changes in crypto/tls: add a descriptor and register it.
++ *
++ * ABI rules:
++ *   - The caller owns every output buffer.  Callees never return malloc()ed
++ *     memory and never retain input pointers.
++ *   - All functions must be reentrant and thread-safe.  No mutable global
++ *     state is allowed inside an algorithm.
++ *   - Lengths are explicit.  A short output buffer returns PQ_ERR_BUFFER.
++ *   - Keys are deterministic byte strings; pub_from_sk is mandatory for
++ *     algorithms used in certificates.
++ *   - Signature input is selected by pq_alg.input.  The TLS layer passes a
++ *     SHA-512 digest (64 bytes) for CertificateVerify, so a TLS signature
++ *     provider MUST advertise PQ_INPUT_DIGEST and must not hash again.
++ */
++#ifndef PQ_ALG_H
++#define PQ_ALG_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define PQ_ALG_ABI_VERSION 1u
++#define PQ_ALG_MAX 64u
++
++typedef enum {
++    PQ_KIND_SIG = 1,
++    PQ_KIND_KEM = 2
++} pq_kind;
++
++typedef enum {
++    PQ_INPUT_MESSAGE = 0,
++    PQ_INPUT_DIGEST  = 1
++} pq_input;
++
++typedef enum {
++    PQ_OK               =  0,
++    PQ_ERR_INVALID      = -1,
++    PQ_ERR_BUFFER       = -2,
++    PQ_ERR_NOTIMPL      = -3,
++    PQ_ERR_VERIFY       = -4,
++    PQ_ERR_DUPLICATE    = -5,
++    PQ_ERR_NOMEM        = -6,
++    PQ_ERR_UNSUPPORTED  = -7
++} pq_status;
++
++/* A descriptor marked PLACEHOLDER may be listed but cannot be used yet. */
++#define PQ_FLAG_PLACEHOLDER 1u
++
++typedef int (*pq_keygen_fn)(uint8_t *pk, uint8_t *sk);
++typedef int (*pq_pub_from_sk_fn)(const uint8_t *sk, uint8_t *pk);
++
++typedef int (*pq_sign_fn)(const uint8_t *sk,
++                          const uint8_t *msg, size_t msg_len,
++                          uint8_t *sig, size_t sig_cap);
++
++typedef int (*pq_verify_fn)(const uint8_t *pk,
++                            const uint8_t *msg, size_t msg_len,
++                            const uint8_t *sig, size_t sig_len);
++
++typedef int (*pq_encaps_fn)(const uint8_t *pk,
++                            uint8_t *ct, size_t ct_cap,
++                            uint8_t *ss, size_t ss_cap);
++
++typedef int (*pq_decaps_fn)(const uint8_t *sk,
++                            const uint8_t *ct, size_t ct_len,
++                            uint8_t *ss, size_t ss_cap);
++
++typedef struct pq_alg {
++    uint32_t        abi_version;
++    pq_kind         kind;
++    pq_input        input;       /* signatures only */
++    uint32_t        flags;       /* PQ_FLAG_* */
++
++    const char     *name;        /* "BiT", "KEM-X"; stable identifier */
++    const char     *oid;         /* dotted OID; certificate extension value */
++    uint16_t        tls_code;    /* private SignatureScheme; 0 for KEM */
++    const char     *version;     /* implementation version, free-form */
++
++    size_t          pk_len;
++    size_t          sk_len;
++    size_t          sig_len;     /* signatures */
++    size_t          ct_len;      /* KEM ciphertext */
++    size_t          ss_len;      /* KEM shared secret */
++
++    pq_keygen_fn      keygen;
++    pq_pub_from_sk_fn pub_from_sk;
++    pq_sign_fn        sign;
++    pq_verify_fn      verify;
++    pq_encaps_fn      encaps;
++    pq_decaps_fn      decaps;
++} pq_alg;
++
++/* The single lookup entry used by Go and by C callers. */
++const pq_alg *pq_alg_lookup(const char *name);
++const pq_alg *pq_alg_by_tls_code(uint16_t code);
++const pq_alg *pq_alg_at(size_t index);
++size_t        pq_alg_count(void);
++int           pq_alg_available(const pq_alg *alg);
++
++/* Dynamic registration is for plugins loaded before serving.  It is not
++ * synchronized: call it during init, never from a handshake. */
++int pq_alg_register(const pq_alg *alg);
++
++const char *pq_status_string(int status);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* PQ_ALG_H */

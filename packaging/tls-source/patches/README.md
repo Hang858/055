@@ -35,3 +35,32 @@ patch -p1 < serverkeygen-transcript-length.patch
 ```bash
 patch -p1 < slhdsa-tls-handshake.patch
 ```
+
+## kem-registry-tls.patch
+
+对应 2026-11-20 的 C 算法注册机制接入：
+
+- 新增 `src/crypto/pq/`：C ABI `pq_alg.h`、注册表、占位符，以及 cgo Go 包装；
+- `crypto/myx509`：读取证书 `.1.4` 的 KEM 算法 OID，按 `pq.Lookup` 封装/解封装；
+  没有 `.1.4` 时保持 Kyber768 旧行为；
+- `crypto/tls`：增加 `Config.KEMTLSKEMAlg/KEMTLSKEMKey`，KEM 证书路径按配置选择算法；
+  解封装/封装错误不再忽略，改为告警并终止；
+- 客户端 `type 252` 的密文长度改为按实际头解析，不再写死 Kyber768 长度；
+- 将两段 KEM SS 绑定到 client Finished（`kemFinishedHash`），错误 KEM 私钥会被拒绝。
+
+应用前提：
+
+1. 先应用 `slhdsa-tls-handshake.patch`（或使用已包含它的工具链）；
+2. 构建时需要 `CGO_ENABLED=1` 和 C 编译器，因为 `crypto/pq` 通过 cgo 调用 C 注册表；
+3. `src/crypto/pq/` 中的 `BiT`/`KEM-TEMPLATE` 是占位描述符，真实算法到位后替换
+   `pq_bit_placeholder.c`/新增 C 适配器，不需要改 TLS 层。
+
+应用方式：
+
+```bash
+patch -p1 < kem-registry-tls.patch
+```
+
+安全边界：该补丁让 KEM 证书路径可以按注册表选择算法，并把 KEM SS 绑定到 client Finished；
+但 KEM SS 仍未进入 `key_schedule.go`，应用数据密钥仍来自 ECDHE，KEM 证书模式仍是
+RSA CertificateVerify + KEM 认证绑定，不是完整的 KEMTLS 密钥调度。

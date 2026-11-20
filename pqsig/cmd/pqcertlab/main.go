@@ -16,20 +16,27 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	pqsig "pqsig"
 )
 
 var (
-	oidPQPublic    = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 1, 1}
-	oidPQAlgorithm = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 1, 3}
+	oidPQPublic       = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 1, 1}
+	oidPQAlgorithm    = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 1, 3}
+	oidPQKEMPublic    = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 1, 0}
+	oidPQKEMAlgorithm = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 54321, 1, 4}
 )
 
 func main() {
 	algName := flag.String("alg", "SLH-DSA-SHA2-128s", "PQ signature algorithm")
 	pubPath := flag.String("pub", "", "raw PQ public key file for the server leaf")
 	clientPubPath := flag.String("client-pub", "", "raw PQ public key file for the client leaf")
+	kemPubPath := flag.String("kem-pub", "", "raw KEM public key for the server leaf")
+	clientKemPubPath := flag.String("client-kem-pub", "", "raw KEM public key for the client leaf")
+	kemOID := flag.String("kem-oid", "", "KEM algorithm OID (dotted), required with -kem-pub")
 	out := flag.String("out", "", "output directory")
 	flag.Parse()
 	if *out == "" || *pubPath == "" {
@@ -49,6 +56,35 @@ func main() {
 	var clientPub []byte
 	if *clientPubPath != "" {
 		clientPub, err = os.ReadFile(*clientPubPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	var kemPub, clientKemPub []byte
+	var kemOIDParsed asn1.ObjectIdentifier
+	if *kemPubPath != "" || *kemOID != "" {
+		if *kemPubPath == "" || *kemOID == "" {
+			fmt.Fprintln(os.Stderr, "FAIL: -kem-pub and -kem-oid must be set together")
+			os.Exit(2)
+		}
+		kemPub, err = os.ReadFile(*kemPubPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
+			os.Exit(1)
+		}
+		kemOIDParsed, err = parseOID(*kemOID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if *clientKemPubPath != "" {
+		if *kemOID == "" {
+			fmt.Fprintln(os.Stderr, "FAIL: -client-kem-pub requires -kem-oid")
+			os.Exit(2)
+		}
+		clientKemPub, err = os.ReadFile(*clientKemPubPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
 			os.Exit(1)
@@ -83,19 +119,29 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	serverExtensions := []pkix.Extension{
+		{Id: oidPQPublic, Value: pub},
+		{Id: oidPQAlgorithm, Value: algDER},
+	}
+	if len(kemPub) != 0 {
+		kemOIDDER, err := asn1.Marshal(kemOIDParsed)
+		if err != nil {
+			fatal(err)
+		}
+		serverExtensions = append(serverExtensions,
+			pkix.Extension{Id: oidPQKEMPublic, Value: kemPub},
+			pkix.Extension{Id: oidPQKEMAlgorithm, Value: kemOIDDER})
+	}
 	server := &x509.Certificate{
-		SerialNumber: big.NewInt(2),
-		Subject:      pkix.Name{CommonName: "quantum-secure.example.com"},
-		DNSNames:     []string{"quantum-secure.example.com"},
-		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
-		NotBefore:    now.Add(-time.Hour),
-		NotAfter:     now.AddDate(1, 0, 0),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		ExtraExtensions: []pkix.Extension{
-			{Id: oidPQPublic, Value: pub},
-			{Id: oidPQAlgorithm, Value: algDER},
-		},
+		SerialNumber:    big.NewInt(2),
+		Subject:         pkix.Name{CommonName: "quantum-secure.example.com"},
+		DNSNames:        []string{"quantum-secure.example.com"},
+		IPAddresses:     []net.IP{net.ParseIP("127.0.0.1")},
+		NotBefore:       now.Add(-time.Hour),
+		NotAfter:        now.AddDate(1, 0, 0),
+		KeyUsage:        x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		ExtraExtensions: serverExtensions,
 	}
 	serverKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -122,6 +168,15 @@ func main() {
 			{Id: oidPQAlgorithm, Value: algDER},
 		}
 	}
+	if len(clientKemPub) != 0 {
+		kemOIDDER, err := asn1.Marshal(kemOIDParsed)
+		if err != nil {
+			fatal(err)
+		}
+		client.ExtraExtensions = append(client.ExtraExtensions,
+			pkix.Extension{Id: oidPQKEMPublic, Value: clientKemPub},
+			pkix.Extension{Id: oidPQKEMAlgorithm, Value: kemOIDDER})
+	}
 	clientKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		fatal(err)
@@ -133,6 +188,22 @@ func main() {
 	writePEM(filepath.Join(*out, "client.crt"), "CERTIFICATE", clientDER)
 	writeKey(filepath.Join(*out, "client.key"), clientKey)
 	fmt.Printf("wrote %s for %s (pub=%d)\n", *out, alg.Name(), len(pub))
+}
+
+func parseOID(s string) (asn1.ObjectIdentifier, error) {
+	parts := strings.Split(s, ".")
+	oid := make(asn1.ObjectIdentifier, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid OID %q", s)
+		}
+		oid = append(oid, n)
+	}
+	if len(oid) < 2 {
+		return nil, fmt.Errorf("OID %q has too few components", s)
+	}
+	return oid, nil
 }
 
 func writePEM(path, kind string, der []byte) {

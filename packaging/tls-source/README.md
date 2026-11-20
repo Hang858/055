@@ -92,3 +92,19 @@ bash tls-test-scripts/run-server-side.sh
 - 握手解析依赖 `tshark`；未安装时解析步骤记 SKIP，其余握手/性能断言照常执行。
 - TLS-3-4（本机编译并回环运行）、TLS-3-5（Windows 交叉编译）按定义在本机完成。
 - 性能/时延规模可在 `tls-test-scripts/config.env` 调整（`PERF_N`、`CONCURRENCY_N`、`NETEM_N` 等）。
+
+## KEM 注册与 KEM 证书模式
+
+`crypto/tls` 已接入 `crypto/pq` 注册表，KEM 证书模式通过环境变量选择算法和私钥：
+
+```sh
+KEMTLS_KEM_ALG=PLACEHOLDER-KEM
+KEMTLS_KEM_KEY=/path/to/end-entity-kem.priv
+```
+
+- KEM 证书叶扩展：`.1.0` 公钥、`.1.4` 算法 OID；
+- 没有 `.1.4` 时保持旧 Kyber768 行为；
+- 构建 cloudflare server/client 需要 `CGO_ENABLED=1` 和 C 编译器；
+- `deploy.sh` 已为 server/client/KEM/ServerKeyGen 变体显式设置 `CGO_ENABLED=1`；
+- KEM SS 已绑定 client Finished，错误 KEM 私钥会被拒绝；但 KEM SS 尚未进入
+  `key_schedule.go`，应用数据密钥仍来自 ECDHE。
