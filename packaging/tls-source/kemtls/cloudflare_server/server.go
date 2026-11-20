@@ -8,7 +8,35 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 )
+
+// protocolConfigFromEnv 读取交互类型配置，便于矩阵测试不重编译：
+//   KEMTLS_PROTOCOL_TYPE   首选类型（单个整数）
+//   KEMTLS_PROTOCOL_TYPES  支持列表，逗号分隔，首项为首选
+//   KEMTLS_MODE_COMPAT     1 表示愿意跟随对端类型并回退 ClassicAKE
+func protocolConfigFromEnv(defaultType uint16) (uint16, []uint16, bool) {
+	primary := defaultType
+	if v := os.Getenv("KEMTLS_PROTOCOL_TYPE"); v != "" {
+		if n, err := strconv.ParseUint(v, 0, 16); err == nil {
+			primary = uint16(n)
+		}
+	}
+	var list []uint16
+	if v := os.Getenv("KEMTLS_PROTOCOL_TYPES"); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if n, err := strconv.ParseUint(part, 0, 16); err == nil {
+				list = append(list, uint16(n))
+			}
+		}
+	}
+	return primary, list, os.Getenv("KEMTLS_MODE_COMPAT") == "1"
+}
 
 // 👈 为了验证
 func loadClientCAs() (*x509.CertPool, error) {
@@ -65,6 +93,8 @@ func main() {
 		log.Fatalf("loadClientCAs failed: %v", err)
 	}
 
+	protocolType, protocolTypes, modeCompat := protocolConfigFromEnv(tls.QuantumSupportAKEX)
+
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		// 如果只做单向认证（客户端只校验服务器），这里不用设置 ClientAuth
@@ -74,12 +104,14 @@ func main() {
 		ClientAuth: tls.RequireAnyClientCert,
 		ClientCAs:  clientCAs,
 		//ProtocolType:       tls.QuantumSupportAKEX,
-		ProtocolType:       tls.QuantumSupportAKEX,
-		ProtocolTypeStrict: 0, // 👈 这里表示是不是强制需要执行这个协议版本
-		KEMTLSSigAlg:       os.Getenv("KEMTLS_SIG_ALG"),
-		KEMTLSSigKey:       os.Getenv("KEMTLS_SIG_KEY"),
-		KEMTLSKEMAlg:       os.Getenv("KEMTLS_KEM_ALG"),
-		KEMTLSKEMKey:       os.Getenv("KEMTLS_KEM_KEY"),
+		ProtocolType:          protocolType,
+		ProtocolTypes:         protocolTypes,
+		ModeCompatibilityFlag: modeCompat,
+		ProtocolTypeStrict:    0, // 👈 旧接口，保留兼容；新配置用 ModeCompatibilityFlag
+		KEMTLSSigAlg:           os.Getenv("KEMTLS_SIG_ALG"),
+		KEMTLSSigKey:           os.Getenv("KEMTLS_SIG_KEY"),
+		KEMTLSKEMAlg:           os.Getenv("KEMTLS_KEM_ALG"),
+		KEMTLSKEMKey:           os.Getenv("KEMTLS_KEM_KEY"),
 	}
 
 	// 使用 TLS 监听

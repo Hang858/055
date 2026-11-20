@@ -64,3 +64,28 @@ patch -p1 < kem-registry-tls.patch
 安全边界：该补丁让 KEM 证书路径可以按注册表选择算法，并把 KEM SS 绑定到 client Finished；
 但 KEM SS 仍未进入 `key_schedule.go`，应用数据密钥仍来自 ECDHE，KEM 证书模式仍是
 RSA CertificateVerify + KEM 认证绑定，不是完整的 KEMTLS 密钥调度。
+
+## protocol-mode-negotiation.patch
+
+对应 2026-11-20 的协议类型协商：
+
+- ClientHello 增加 `0xFFF3` 支持列表扩展，首项为首选；
+- `Config.ProtocolTypes` + `Config.ModeCompatibilityFlag`，语义与论文
+  `modeCompatibilityFlag` 对齐；旧 `ProtocolTypeStrict` 保留兼容；
+- 服务端按客户端优先级选共同类型，强制模式只接受本端首选或 `ClassicAKE`，
+  交集为空则 `handshake_failure`；客户端校验选择必须来自自己通告的列表；
+- 补齐 12/20/22/23 组合；HRR 选择客户端尚未发送 key_share 的经典曲线，
+  ServerHello/HRR 携带完整组合编号；
+- 服务端能力判断会使用 `signature_algorithms_cert`，客户端未声明 PQ 证书
+  验签算法时不选 PQ 签名认证。
+
+应用顺序：
+
+```bash
+patch -p1 < slhdsa-tls-handshake.patch
+patch -p1 < kem-registry-tls.patch
+patch -p1 < protocol-mode-negotiation.patch
+```
+
+测试矩阵与边界见 `docs/协议类型协商-20261120.md`。
+

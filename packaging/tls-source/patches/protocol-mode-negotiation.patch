@@ -1,0 +1,962 @@
+diff -ruN backup-before-negotiation/tls/common.go extracted/go_kemtls/src/crypto/tls/common.go
+--- a/src/crypto/tls/common.go	2026-11-20 09:35:08.715864431 +0800
++++ b/src/crypto/tls/common.go	2026-11-20 10:23:02.777542938 +0800
+@@ -36,6 +36,7 @@
+ const extensionPQPublicKey = 0xFE02        // 服务器抗量子公钥扩展
+ const extensionPQCiphertext = 0xFE03       // 服务器抗量子密文扩展
+ const extensionProtocolTypeStrict = 0xFFF2 // 自定义编号，私有使用范围内，用来表示这个类型是不是强制的
++const extensionProtocolTypeList = 0xFFF3   // 客户端支持的交互类型列表，首项为首选
+ 
+ const (
+ 	// 👈 定义一个纯经典的回退版本
+@@ -55,10 +56,37 @@
+ 	QuantumSupportSignCert_ServerKeyGen = 13
+ 	QuantumSupportKemCert_KEX           = 21
+ 
++	// 论文第 5 章的完整组合：10*认证 + 密钥交换编号。
++	// 12/22/23 与 20 在实现上分别复用 HRR、ServerKeyGen 和经典密钥交换路径。
++	QuantumSupportSignCert_HRR         = 12
++	QuantumSupportKemCert_ClassicKEX   = 20
++	QuantumSupportKemCert_HRR          = 22
++	QuantumSupportKemCert_ServerKeyGen = 23
++
+ 	// 👈 这里设置一个自动的选项，server端会根据Client端发过来的协议类型，从而自动选择协议类型
+ 	Auto = 99
+ )
+ 
++// protocolTypeAuth 返回组合编号中的认证部分（0/10/20）。
++func protocolTypeAuth(t uint16) uint16 { return (t / 10) * 10 }
++
++// protocolTypeKEX 返回组合编号中的密钥交换部分（0..3）。
++func protocolTypeKEX(t uint16) uint16 { return t % 10 }
++
++// protocolTypeValid 判断组合编号是否落在已定义的取值范围内。
++func protocolTypeValid(t uint16) bool {
++	// 0..3 是经典证书认证下的密钥交换变体（经典/混合/HRR/参数后移）。
++	if t <= QuantumSupportServerKeyGen {
++		return true
++	}
++	auth := protocolTypeAuth(t)
++	kex := protocolTypeKEX(t)
++	if auth != QuantumSupportSignCert && auth != QuantumSupportKemCert {
++		return false
++	}
++	return kex <= QuantumSupportServerKeyGen
++}
++
+ const (
+ 	VersionTLS10 = 0x0301
+ 	VersionTLS11 = 0x0302
+@@ -1010,9 +1038,23 @@
+ 	autoSessionTicketKeys []ticketKey
+ 
+ 	//👈 这里定义协议交互类型
++	//
++	// ProtocolType 是首选类型。ProtocolTypes 非空时表示本端支持的完整列表，
++	// 首项为首选；协商时以客户端列表顺序为准。ProtocolTypeStrict 保留为旧
++	// 接口（1=强制本端类型），新代码请使用 ProtocolTypes + ModeCompatibilityFlag。
+ 	ProtocolType       uint16
+ 	ProtocolTypeStrict uint16
+ 
++	// ProtocolTypes 是本端支持的交互类型列表，首项为首选。为空时等价于
++	// []uint16{ProtocolType}。列表里可以包含 ClassicAKE(0) 作为回退项。
++	ProtocolTypes []uint16
++
++	// ModeCompatibilityFlag 对应论文的 modeCompatibilityFlag：
++	// true 表示愿意跟随对端已通告的类型；false 表示只接受本端首选类型，
++	// 不匹配时回退到 ClassicAKE(0)。只有设置了 ProtocolTypes 时才生效，
++	// 以免改变旧配置的行为。
++	ModeCompatibilityFlag bool
++
+ 	// KEMTLSSigAlg/KEMTLSSigKey select the PQ signature algorithm and raw
+ 	// private key for the ServerKeyGen/KEMTLS sign-certificate path. Empty
+ 	// values preserve the legacy Dilithium2 behavior.
+@@ -1025,6 +1067,53 @@
+ 	KEMTLSKEMKey string
+ }
+ 
++// protocolTypeList 返回去重后的本端支持列表，首项为首选。
++func (c *Config) protocolTypeList() []uint16 {
++	list := c.ProtocolTypes
++	if len(list) == 0 {
++		list = []uint16{c.ProtocolType}
++	}
++	seen := make(map[uint16]bool, len(list))
++	out := make([]uint16, 0, len(list)+1)
++	for _, t := range list {
++		if !protocolTypeValid(t) || seen[t] {
++			continue
++		}
++		seen[t] = true
++		out = append(out, t)
++	}
++	// 兼容模式允许回退到经典 TLS：把 0 放到列表末尾，作为最低优先级候选。
++	if len(c.ProtocolTypes) > 0 && c.ModeCompatibilityFlag && !seen[ClassicAKE] {
++		out = append(out, ClassicAKE)
++	}
++	if len(out) == 0 {
++		out = append(out, ClassicAKE)
++	}
++	return out
++}
++
++// protocolTypePrimary 返回列表首项，即本端首选类型。
++func (c *Config) protocolTypePrimary() uint16 {
++	return c.protocolTypeList()[0]
++}
++
++// protocolTypeStrict 返回本端是否强制首选类型。设置 ProtocolTypes 时按论文
++// 语义由 ModeCompatibilityFlag 取反；未设置时沿用旧的 ProtocolTypeStrict。
++func (c *Config) protocolTypeStrict() bool {
++	if len(c.ProtocolTypes) > 0 {
++		return !c.ModeCompatibilityFlag
++	}
++	return c.ProtocolTypeStrict == 1
++}
++
++// protocolTypeWireStrict 返回扩展 0xFFF2 的取值（1=强制，0=可协商）。
++func (c *Config) protocolTypeWireStrict() uint16 {
++	if c.protocolTypeStrict() {
++		return 1
++	}
++	return 0
++}
++
+ // EncryptedClientHelloKey holds a private key that is associated
+ // with a specific ECH config known to a client.
+ type EncryptedClientHelloKey struct {
+diff -ruN backup-before-negotiation/tls/handshake_client.go extracted/go_kemtls/src/crypto/tls/handshake_client.go
+--- a/src/crypto/tls/handshake_client.go	2026-02-21 17:55:40.000000000 +0800
++++ b/src/crypto/tls/handshake_client.go	2026-11-20 10:28:57.271371077 +0800
+@@ -21,6 +21,8 @@
+ 	// 👈 这里是迁移模式新增的
+ 	"crypto/rand"
+ 	"fmt"
++	"github.com/cloudflare/circl/kem"
++	"github.com/cloudflare/circl/kem/kyber/kyber768"
+ 	"hash"
+ 	"internal/godebug"
+ 	"io"
+@@ -29,8 +31,6 @@
+ 	"strconv"
+ 	"strings"
+ 	"time"
+-	"github.com/cloudflare/circl/kem/kyber/kyber768"
+-	"github.com/cloudflare/circl/kem"
+ )
+ 
+ type clientHandshakeState struct {
+@@ -41,21 +41,18 @@
+ 	suite        *cipherSuite
+ 	finishedHash finishedHash
+ 	masterSecret []byte
+-	session      *SessionState // the session being resumed
+-	ticket       []byte        // a fresh ticket received during this handshake
+-	pqPublicKey  kem.PublicKey   //👈 记录拓展的密钥
+-	pqPrivKey    kem.PrivateKey   //👈 记录拓展的密钥
++	session      *SessionState  // the session being resumed
++	ticket       []byte         // a fresh ticket received during this handshake
++	pqPublicKey  kem.PublicKey  //👈 记录拓展的密钥
++	pqPrivKey    kem.PrivateKey //👈 记录拓展的密钥
+ }
+ 
+ var pqPublicKey_global kem.PublicKey
+ var pqPrivKey_global kem.PrivateKey
+ 
+-
+ func (c *Conn) makeClientHello() (*clientHelloMsg, *keySharePrivateKeys, *echClientContext, error) {
+ 	config := c.config
+ 
+-
+-
+ 	if len(config.ServerName) == 0 && !config.InsecureSkipVerify {
+ 		return nil, nil, nil, errors.New("tls: either ServerName or InsecureSkipVerify must be specified in the tls.Config")
+ 	}
+@@ -96,13 +93,14 @@
+ 		supportedVersions:            supportedVersions,
+ 	}
+ 
+-	//👈 这里选择要进行的密钥交换类型
+-	hello.ProtocolType = c.config.ProtocolType
+-	hello.ProtocolTypeStrict = c.config.ProtocolTypeStrict
++	//👈 这里选择要进行的密钥交换类型：首项为首选，列表用于协商
++	hello.ProtocolType = c.config.protocolTypePrimary()
++	hello.ProtocolTypes = c.config.protocolTypeList()
++	hello.ProtocolTypeStrict = c.config.protocolTypeWireStrict()
+ 	//hello.ProtocolType = uint16(QuantumSupportAKEX)
+ 
+-	//👈 这里给clienthello中的PQ公钥字段赋值
+-	if hello.ProtocolType % 10 == QuantumSupportKEX {
++	//👈 这里给clienthello中的PQ公钥字段赋值（仅混合密钥交换需要）
++	if hello.ProtocolType%10 == QuantumSupportKEX {
+ 		pqPublicKey, pqPrivKey, _ := kyber768.GenerateKeyPair(rand.Reader)
+ 		// 将公钥序列化为字节
+ 		pubKeyBytes, _ := pqPublicKey.MarshalBinary()
+@@ -111,7 +109,7 @@
+ 		pqPublicKey_global = pqPublicKey
+ 		hello.pqPublicKey = pubKeyBytes
+ 	}
+-	
++
+ 	//l := len(pubKeyBytes)
+ 	//hdr := []byte{
+ 	//	byte(typePQPublicKey),
+@@ -303,9 +301,6 @@
+ 		return err
+ 	}
+ 
+-
+-
+-
+ 	session, earlySecret, binderKey, err := c.loadSession(hello)
+ 	if err != nil {
+ 		return err
+@@ -395,19 +390,19 @@
+ 
+ 	if c.vers == VersionTLS13 {
+ 		hs := &clientHandshakeStateTLS13{
+-			c:            c,
+-			ctx:          ctx,
+-			serverHello:  serverHello,
+-			hello:        hello,
+-			keyShareKeys: keyShareKeys,
+-			session:      session,
+-			earlySecret:  earlySecret,
+-			binderKey:    binderKey,
+-			echContext:   ech,
+-			protocoltype: c.config.ProtocolType,
+-			pqPublicKey:  pqPublicKey_global,
+-			pqPrivKey: pqPrivKey_global,
+-			protocoltypestrict: c.config.ProtocolTypeStrict,
++			c:                  c,
++			ctx:                ctx,
++			serverHello:        serverHello,
++			hello:              hello,
++			keyShareKeys:       keyShareKeys,
++			session:            session,
++			earlySecret:        earlySecret,
++			binderKey:          binderKey,
++			echContext:         ech,
++			protocoltype:       c.config.protocolTypePrimary(),
++			pqPublicKey:        pqPublicKey_global,
++			pqPrivKey:          pqPrivKey_global,
++			protocoltypestrict: c.config.protocolTypeWireStrict(),
+ 		}
+ 		return hs.handshake()
+ 	}
+diff -ruN backup-before-negotiation/tls/handshake_client_tls13.go extracted/go_kemtls/src/crypto/tls/handshake_client_tls13.go
+--- a/src/crypto/tls/handshake_client_tls13.go	2026-11-20 09:43:21.771272019 +0800
++++ b/src/crypto/tls/handshake_client_tls13.go	2026-11-20 10:28:57.259142714 +0800
+@@ -66,25 +66,22 @@
+ func (hs *clientHandshakeStateTLS13) handshake() error {
+ 	c := hs.c
+ 
+-	// 👈 这里协商协议交互流程如果不一致则强制采用纯经典模式
+-	if hs.protocoltypestrict == 0 && hs.serverHello.ProtocolTypeStrict == 1 {
+-		if hs.protocoltype != hs.serverHello.ProtocolType {
+-			hs.protocoltype = hs.serverHello.ProtocolType
+-		}
+-	} else {
+-		if hs.protocoltypestrict == 1 {
+-			if hs.protocoltype != hs.serverHello.ProtocolType {
+-				hs.protocoltype = ClassicAKE
+-			}
+-		}
+-
++	// 👈 协商结果必须落在客户端通告的列表里，否则视为服务端降级/篡改。
++	offered := hs.hello.ProtocolTypes
++	if len(offered) == 0 {
++		offered = []uint16{hs.hello.ProtocolType}
++	}
++	selected := hs.serverHello.ProtocolType
++	if !slices.Contains(offered, selected) {
++		c.sendAlert(alertIllegalParameter)
++		return fmt.Errorf("tls: server selected unadvertised protocol type %d", selected)
++	}
++	// 强制模式只接受本端首选类型，或回退到 ClassicAKE。
++	if hs.protocoltypestrict == 1 && selected != hs.protocoltype && selected != ClassicAKE {
++		c.sendAlert(alertIllegalParameter)
++		return fmt.Errorf("tls: strict client rejected protocol type %d", selected)
+ 	}
+-	// 👈 之前的协商逻辑目前已经不用
+-	//if hs.serverHello.ProtocolType == hs.hello.ProtocolType {
+-	//	hs.protocoltype = hs.hello.ProtocolType
+-	//} else {
+-	//	hs.protocoltype = ClassicAKE
+-	//}
++	hs.protocoltype = selected
+ 
+ 	// The server must not select TLS 1.3 in a renegotiation. See RFC 8446,
+ 	// sections 4.1.2 and 4.1.3.
+@@ -357,7 +354,7 @@
+ 	// share for it this time.
+ 
+ 	// 👈 这里如果是触发的helloretryrequest机制则跳过这里的检查，因为这里不是真的出错，而是强制client端发送clienthello
+-	if hs.protocoltype%10 != GoogleHelloRetryRequest {
++	{
+ 		if curveID := hs.serverHello.selectedGroup; curveID != 0 {
+ 			if !slices.Contains(hello.supportedCurves, curveID) {
+ 				c.sendAlert(alertIllegalParameter)
+@@ -436,8 +433,8 @@
+ 		}
+ 	} else {
+ 		hs.hello = hello
+-		// 👈 这里生成抗量子公钥并发送，实现google的机制
+-		if hs.protocoltype%10 == GoogleHelloRetryRequest {
++		// 👈 这里生成抗量子公钥并发送，实现google的机制（仅经典认证分支）
++		if hs.protocoltype%10 == GoogleHelloRetryRequest && protocolTypeAuth(hs.protocoltype) == ClassicSign {
+ 			hs.hello.ProtocolType = QuantumSupportKEX
+ 			pqPublicKey, pqPrivKey, _ := kyber768.GenerateKeyPair(rand.Reader)
+ 			// 将公钥序列化为字节
+diff -ruN backup-before-negotiation/tls/handshake_messages.go extracted/go_kemtls/src/crypto/tls/handshake_messages.go
+--- a/src/crypto/tls/handshake_messages.go	2026-02-23 11:24:17.000000000 +0800
++++ b/src/crypto/tls/handshake_messages.go	2026-11-20 10:28:57.274371063 +0800
+@@ -15,13 +15,12 @@
+ 
+ // 👈 拓展PQ的公钥和密文标识符
+ // 👈 这些标识符有点乱，后续可以修改一下
+-const typePQPublicKey uint8 = 254 // 自定义，避开现有值
+-const typePQKeyExchange uint8 = 253//没啥用
+-const typePQClientKeyExchange = 21     // 这里仅在专利内容中使用
++const typePQPublicKey uint8 = 254   // 自定义，避开现有值
++const typePQKeyExchange uint8 = 253 //没啥用
++const typePQClientKeyExchange = 21  // 这里仅在专利内容中使用
+ 
+ const typeServerPersistentCiphertext = 252 // 👈 这里是在client端发送KEM证书的时候配合client端发送密文
+ 
+-
+ // The marshalingFunction type is an adapter to allow the use of ordinary
+ // functions as cryptobyte.MarshalingValue.
+ type marshalingFunction func(b *cryptobyte.Builder) error
+@@ -110,9 +109,10 @@
+ 	extensions []uint16
+ 
+ 	// 👈 新增字段：标识密钥交换协议类型和抗量子公钥
+-	ProtocolType uint16
+-	ProtocolTypeStrict uint16 // 👈来定义协议类型是否是强制的
+-	pqPublicKey []byte // 抗量子公钥
++	ProtocolType       uint16
++	ProtocolTypeStrict uint16   // 👈来定义协议类型是否是强制的
++	ProtocolTypes      []uint16 // 👈 本端支持的类型列表，首项为首选
++	pqPublicKey        []byte   // 抗量子公钥
+ }
+ 
+ func (m *clientHelloMsg) marshalMsg(echInner bool) ([]byte, error) {
+@@ -376,8 +376,14 @@
+ 		})
+ 	}
+ 
+-
+-
++	if len(m.ProtocolTypes) > 0 {
++		exts.AddUint16(extensionProtocolTypeList)
++		exts.AddUint16LengthPrefixed(func(exts *cryptobyte.Builder) {
++			for _, t := range m.ProtocolTypes {
++				exts.AddUint16(t)
++			}
++		})
++	}
+ 
+ 	extBytes, err := exts.Bytes()
+ 	if err != nil {
+@@ -522,6 +528,18 @@
+ 			if !extData.ReadUint16(&m.ProtocolTypeStrict) {
+ 				return false
+ 			}
++		case extensionProtocolTypeList:
++			// 列表最多 32 项，避免恶意 ClientHello 无限扩张。
++			for !extData.Empty() {
++				if len(m.ProtocolTypes) >= 32 {
++					return false
++				}
++				var t uint16
++				if !extData.ReadUint16(&t) {
++					return false
++				}
++				m.ProtocolTypes = append(m.ProtocolTypes, t)
++			}
+ 			//👈 添加抗量子公钥扩展处理
+ 		case extensionPQPublicKey:
+ 			m.pqPublicKey = make([]byte, len(extData))
+@@ -820,7 +838,6 @@
+ 	return true
+ }
+ 
+-
+ func (m *clientHelloMsg) originalBytes() []byte {
+ 	return m.original
+ }
+@@ -885,10 +902,10 @@
+ 	selectedGroup CurveID
+ 
+ 	// 👈 新增字段：标识密钥交换协议类型和密文
+-	ProtocolType uint16
++	ProtocolType       uint16
+ 	ProtocolTypeStrict uint16
+-	pqPublicKey []byte // 抗量子公钥，仅在专利实现中使用
+-	pqCiphertext []byte
++	pqPublicKey        []byte // 抗量子公钥，仅在专利实现中使用
++	pqCiphertext       []byte
+ }
+ 
+ func (m *serverHelloMsg) marshal() ([]byte, error) {
+@@ -905,7 +922,7 @@
+ 			exts.AddBytes(m.pqPublicKey)
+ 		})
+ 	}
+-	
++
+ 	// 👈 这里序列化密文
+ 	if len(m.pqCiphertext) > 0 {
+ 		exts.AddUint16(extensionPQCiphertext)
+@@ -913,7 +930,7 @@
+ 			exts.AddBytes(m.pqCiphertext)
+ 		})
+ 	}
+-	
++
+ 	if m.ticketSupported {
+ 		exts.AddUint16(extensionSessionTicket)
+ 		exts.AddUint16(0) // empty extension_data
+@@ -1659,9 +1676,9 @@
+ }
+ 
+ type certificateMsgTLS13 struct {
+-	certificate  Certificate
+-	ocspStapling bool
+-	scts         bool
++	certificate             Certificate
++	ocspStapling            bool
++	scts                    bool
+ 	persistentCiphertextKEM []byte
+ }
+ 
+@@ -1685,8 +1702,6 @@
+ 		b.AddBytes(m.persistentCiphertextKEM)               // 内容
+ 	})
+ 
+-
+-
+ 	return b.Bytes()
+ }
+ 
+@@ -1733,7 +1748,6 @@
+ 
+ 	var context cryptobyte.String
+ 
+-
+ 	// 👈 取消检查是否是空先跳过，因为还要传递密文，这里不是空
+ 	//if !s.Skip(4) || // message type and uint24 length field
+ 	//	!s.ReadUint8LengthPrefixed(&context) || !context.Empty() ||
+@@ -1781,7 +1795,6 @@
+ 	// 最终必须消费干净：不允许还有别的私货
+ 	return s.Empty()
+ 
+-
+ 	//var kemLen uint16
+ 	//// 如果读取失败，或者没有剩余字节，则认为没有 ciphertextKEM，跳过
+ 	//if !s.ReadUint16(&kemLen) || kemLen == 0 {
+diff -ruN backup-before-negotiation/tls/handshake_server.go extracted/go_kemtls/src/crypto/tls/handshake_server.go
+--- a/src/crypto/tls/handshake_server.go	2026-11-16 22:54:13.481080004 +0800
++++ b/src/crypto/tls/handshake_server.go	2026-11-20 10:23:40.216191366 +0800
+@@ -17,11 +17,7 @@
+ 	"fmt"
+ 	"hash"
+ 	"io"
+-	"slices"
+ 	"time"
+-	//👈 这里引入自己实现的抗量子证书
+-	"crypto/myx509"
+-	"log"
+ )
+ 
+ // serverHandshakeState contains details of a server handshake in progress.
+@@ -51,160 +47,12 @@
+ 
+ 	if c.vers == VersionTLS13 {
+ 		hs := serverHandshakeStateTLS13{
+-			c:           c,
+-			ctx:         ctx,
+-			clientHello: clientHello,
+-			echContext:  ech,
+-			// 👈初始化默认成0
+-			protocoltype: c.config.ProtocolType,
+-			protocoltypestrict:  c.config.ProtocolTypeStrict,
+-			
+-		}
+-		// 👈 新增对于特殊TLS协议交互执行的判断
+-		// 👈 由于目前server端的提供的config来判读交互协议类型，因此不需要判断证书是否需要支持抗量子
+-		if hs.protocoltypestrict == 0 && hs.clientHello.ProtocolTypeStrict == 1 {
+-			cert_sign := false
+-			if (clientHello.ProtocolType/10)*10 == QuantumSupportSignCert {
+-				// 看看client端是否支持DILITHIUM2withSHA512，如果支持则看看server端证书是否支持抗量子
+-				certificate, err := c.config.getCertificate(clientHelloInfo(hs.ctx, c, hs.clientHello))
+-				if err != nil {
+-					log.Printf("证书失效，在收到clienthello后没有提取到证书")
+-				}
+-				if slices.Contains(hs.clientHello.supportedSignatureAlgorithms, DILITHIUM2withSHA512) {
+-					certs := make([]*x509.Certificate, len(certificate.Certificate))
+-					for i, asn1Data := range certificate.Certificate {
+-						cert, err := globalCertCache.newCert(asn1Data)
+-						if err != nil {
+-							log.Printf("证书失效，在收到clienthello后没有恢复出证书")
+-						}
+-						if cert.PublicKeyAlgorithm == x509.RSA {
+-							n := cert.PublicKey.(*rsa.PublicKey).N.BitLen()
+-							if max, ok := checkKeySize(n); !ok {
+-								log.Printf("收到证书多于 %d 比特", max)
+-							}
+-						}
+-						certs[i] = cert
+-					}
+-
+-					if myx509.CheckQuantumResistanceSupport(certs[0]) {
+-						cert_sign = true
+-						//hs.protocoltype = QuantumSupportAKEX
+-						hs.PQverifysupport = true
+-						hs.sigAlg = DILITHIUM2withSHA512
+-						log.Printf("✅ 选择抗量子签名算法: Dilithium3-SHA512")
+-					} else {
+-						// 证书不支持 Dilithium，回退到传统算法
+-						hs.sigAlg, err = selectSignatureScheme(c.vers, certificate, hs.clientHello.supportedSignatureAlgorithms)
+-						log.Printf("⚠️ 证书不支持 Dilithium，回退到传统认证算法: %v", hs.sigAlg)
+-						//这里仍然尝试使用抗量子密钥交换
+-						//hs.protocoltype = QuantumSupportKEX
+-					}
+-				}
+-
+-				if c.config.KEMTLSSigAlg != "" {
+-					if scheme, ok := PQSchemeByName(c.config.KEMTLSSigAlg); ok &&
+-						slices.Contains(hs.clientHello.supportedSignatureAlgorithms, scheme) {
+-						hs.sigAlg = scheme
+-						hs.PQverifysupport = true
+-						log.Printf("✅ 配置选择抗量子签名算法: %s (0x%04x)", c.config.KEMTLSSigAlg, uint16(scheme))
+-					}
+-				}
+-				fmt.Println("启用抗量子证书")
+-			}
+-			// 👈 这里根据client端的协议交互流程来选择自己的协议交互流程
+-			// 👈 由于Server端根据自己的config来选择协议类型的所以可以跳过这里
+-			switch clientHello.ProtocolType {
+-			case ClassicAKE:
+-				hs.protocoltype = ClassicAKE
+-				fmt.Println("在Hello阶段采用抗量子ClassicAKE")
+-			case QuantumSupportKEX:
+-				hs.protocoltype = QuantumSupportKEX
+-				fmt.Println("在Hello阶段采用抗量子KEX")
+-			case QuantumSupportAKEX:
+-				if cert_sign == true {
+-					hs.protocoltype = QuantumSupportAKEX
+-					fmt.Println("在Hello阶段采用抗量子AKEX")
+-				} else {
+-					hs.protocoltype = QuantumSupportKEX
+-					fmt.Println("在Hello阶段采用抗量子KEX")
+-				}
+-			case QuantumSupportSignCert:
+-				if cert_sign == true {
+-					hs.protocoltype = QuantumSupportSignCert
+-					fmt.Println("在Hello阶段采用抗量子QuantumSupportSignCert")
+-				} else {
+-					hs.protocoltype = ClassicAKE
+-					fmt.Println("在Hello阶段采用抗量子ClassicAKE")
+-				}
+-				//// 看看client端是否支持DILITHIUM2withSHA512，如果支持则看看server端证书是否支持抗量子
+-				//certificate, err := c.config.getCertificate(clientHelloInfo(hs.ctx, c, hs.clientHello))
+-				//if err != nil {
+-				//	log.Printf("证书失效，在收到clienthello后没有提取到证书")
+-				//}
+-				//if slices.Contains(hs.clientHello.supportedSignatureAlgorithms, DILITHIUM2withSHA512) {
+-				//	certs := make([]*x509.Certificate, len(certificate.Certificate))
+-				//	for i, asn1Data := range certificate.Certificate {
+-				//		cert, err := globalCertCache.newCert(asn1Data)
+-				//		if err != nil {
+-				//			log.Printf("证书失效，在收到clienthello后没有恢复出证书")
+-				//		}
+-				//		if cert.PublicKeyAlgorithm == x509.RSA {
+-				//			n := cert.PublicKey.(*rsa.PublicKey).N.BitLen()
+-				//			if max, ok := checkKeySize(n); !ok {
+-				//				log.Printf("收到证书多于 %d 比特", max)
+-				//			}
+-				//		}
+-				//		certs[i] = cert
+-				//	}
+-				//
+-				//	if myx509.CheckQuantumResistanceSupport(certs[0]) {
+-				//		hs.protocoltype = QuantumSupportAKEX
+-				//		hs.PQverifysupport = true
+-				//		hs.sigAlg = DILITHIUM2withSHA512
+-				//		log.Printf("✅ 选择抗量子签名算法: Dilithium3-SHA512")
+-				//	} else {
+-				//		// 证书不支持 Dilithium，回退到传统算法
+-				//		hs.sigAlg, err = selectSignatureScheme(c.vers, certificate, hs.clientHello.supportedSignatureAlgorithms)
+-				//		log.Printf("⚠️ 证书不支持 Dilithium，回退到传统认证算法: %v", hs.sigAlg)
+-				//		//这里仍然尝试使用抗量子密钥交换
+-				//		hs.protocoltype = QuantumSupportKEX
+-				//	}
+-				//}
+-				//
+-				//fmt.Println("在Hello阶段采用抗量子AKEX")
+-
+-			case GoogleHelloRetryRequest:
+-				hs.protocoltype = GoogleHelloRetryRequest
+-				fmt.Println("在Hello阶段采用抗量子GoogleHelloRetryRequest")
+-
+-			case QuantumSupportSignCert_ServerKeyGen:
+-				if cert_sign == true {
+-					hs.protocoltype = QuantumSupportSignCert_ServerKeyGen
+-					fmt.Println("在Hello阶段采用抗量子QuantumSupportSignCert_ServerKeyGen")
+-				} else {
+-					hs.protocoltype = QuantumSupportServerKeyGen
+-					fmt.Println("在Hello阶段采用抗量子QuantumSupportServerKeyGen")
+-				}
+-			case QuantumSupportServerKeyGen:
+-				hs.protocoltype = QuantumSupportServerKeyGen
+-				fmt.Println("在Hello阶段采用抗量子QuantumSupportServerKeyGen")
+-
+-			case QuantumSupportKemCert_KEX:
+-				// 处理纯 Kyber 密钥交换协议
+-				hs.protocoltype = QuantumSupportKemCert_KEX
+-				fmt.Println("在Hello阶段采用抗量子KEMTLS(QuantumSupportKemCert_KEX)")
+-
+-			default:
+-				// 未知协议类型，返回错误
+-				fmt.Println("采用TLS常规流程交互")
+-				return hs.handshake()
+-			}
+-		} else {
+-			if hs.protocoltype != hs.clientHello.ProtocolType {
+-				if hs.protocoltypestrict == 1 && hs.clientHello.ProtocolTypeStrict == 1 {
+-					hs.protocoltype = ClassicAKE // 👈 特殊情况处理，这里如果要是对方强制要执行自己的协议类型，自己还不支持的话就退化啊到最初是的类型
+-				}
+-			}
++			c:                  c,
++			ctx:                ctx,
++			clientHello:        clientHello,
++			echContext:         ech,
++			protocoltype:       c.config.protocolTypePrimary(),
++			protocoltypestrict: c.config.protocolTypeWireStrict(),
+ 		}
+ 		return hs.handshake()
+ 	}
+diff -ruN backup-before-negotiation/tls/handshake_server_tls13.go extracted/go_kemtls/src/crypto/tls/handshake_server_tls13.go
+--- a/src/crypto/tls/handshake_server_tls13.go	2026-11-20 09:43:44.478550004 +0800
++++ b/src/crypto/tls/handshake_server_tls13.go	2026-11-20 10:29:27.678259302 +0800
+@@ -115,7 +115,7 @@
+ 		return err
+ 	}
+ 	// 👈 这里拓展一个专利中才能用到的过程就是client端收到并发送密文
+-	if (hs.clientHello.ProtocolType/10)*10 == QuantumSupportKemCert {
++	if protocolTypeAuth(hs.protocoltype) == QuantumSupportKemCert {
+ 		if err := hs.sendServerCiphertext(); err != nil {
+ 			return err
+ 		}
+@@ -157,6 +157,116 @@
+ 	return nil
+ }
+ 
++// negotiateProtocolType 按论文第 5 章的方式选择交互类型：
++// 客户端列表顺序即优先级；服务端强制模式下只接受本端类型或 ClassicAKE；
++// 选择结果必须来自双方的交集，否则中止握手（防降级）。
++func (hs *serverHandshakeStateTLS13) negotiateProtocolType() error {
++	offered := hs.clientHello.ProtocolTypes
++	if len(offered) == 0 {
++		offered = []uint16{hs.clientHello.ProtocolType}
++	}
++	supported := make(map[uint16]bool)
++	for _, t := range hs.c.config.protocolTypeList() {
++		supported[t] = true
++	}
++	// 经典 TLS 是任何实现都具备的能力，作为最低优先级回退项。
++	supported[ClassicAKE] = true
++
++	clientFlexible := hs.clientHello.ProtocolTypeStrict == 0
++	clientPrimary := offered[0]
++	serverStrict := hs.protocoltypestrict == 1
++
++	var chosen uint16
++	found := false
++	for _, t := range offered {
++		if !protocolTypeValid(t) {
++			hs.c.sendAlert(alertIllegalParameter)
++			return fmt.Errorf("tls: client offered invalid protocol type %d", t)
++		}
++		if t != ClassicAKE && !supported[t] {
++			continue
++		}
++		// 客户端强制模式不能接受非首选类型（0 是允许的回退）。
++		if !clientFlexible && t != clientPrimary && t != ClassicAKE {
++			continue
++		}
++		// 服务端强制模式只接受本端类型（0 是允许的回退）。
++		if serverStrict && t != hs.protocoltype && t != ClassicAKE {
++			continue
++		}
++		if !hs.canRunProtocolType(t) {
++			continue
++		}
++		chosen = t
++		found = true
++		break
++	}
++	if !found {
++		hs.c.sendAlert(alertHandshakeFailure)
++		return fmt.Errorf("tls: no common protocol type (client %v, server %v)", offered, hs.c.config.protocolTypeList())
++	}
++
++	hs.protocoltype = chosen
++	hs.hello.ProtocolType = chosen
++	hs.hello.ProtocolTypeStrict = hs.protocoltypestrict
++	log.Printf("协议类型协商: client=%v strict=%d -> selected=%d", offered, hs.clientHello.ProtocolTypeStrict, chosen)
++	return nil
++}
++
++// canRunProtocolType 检查服务端是否具备运行某组合的配置能力。
++func (hs *serverHandshakeStateTLS13) canRunProtocolType(t uint16) bool {
++	if t == ClassicAKE {
++		return true
++	}
++	c := hs.c
++	switch protocolTypeKEX(t) {
++	case ClassicAKE:
++		// 经典密钥交换，不需要额外的 PQ 公钥。
++	case QuantumSupportKEX:
++		if len(hs.clientHello.pqPublicKey) == 0 {
++			return false
++		}
++	case GoogleHelloRetryRequest, QuantumSupportServerKeyGen:
++		// 这两类由服务端生成后移参数，不需要客户端预送 PQ 公钥。
++	}
++
++	switch protocolTypeAuth(t) {
++	case ClassicSign:
++		return true
++	case QuantumSupportSignCert:
++		// 客户端若通过 signature_algorithms_cert 明确声明了证书验签算法，
++		// 必须包含至少一种 PQ 签名，否则不能选择 PQ 证书认证。
++		if len(hs.clientHello.supportedSignatureAlgorithmsCert) > 0 {
++			hasPQ := false
++			for _, s := range hs.clientHello.supportedSignatureAlgorithmsCert {
++				if IsPQSignatureScheme(s) {
++					hasPQ = true
++					break
++				}
++			}
++			if !hasPQ {
++				return false
++			}
++		}
++		if c.config.KEMTLSSigAlg != "" || c.config.KEMTLSSigKey != "" {
++			return true
++		}
++		certificate, err := c.config.getCertificate(clientHelloInfo(hs.ctx, c, hs.clientHello))
++		if err != nil || len(certificate.Certificate) == 0 {
++			return false
++		}
++		leaf, err := globalCertCache.newCert(certificate.Certificate[0])
++		if err != nil {
++			return false
++		}
++		return myx509.CheckQuantumResistanceSupport(leaf)
++	case QuantumSupportKemCert:
++		// KEM 证书模式需要双向证书：服务端要向客户端证书封装密文。
++		return c.config.ClientAuth >= RequestClientCert
++	}
++	return false
++}
++
+ func (hs *serverHandshakeStateTLS13) processClientHello() error {
+ 	c := hs.c
+ 
+@@ -199,6 +309,10 @@
+ 		return errors.New("tls: TLS 1.3 client supports illegal compression methods")
+ 	}
+ 
++	if err := hs.negotiateProtocolType(); err != nil {
++		return err
++	}
++
+ 	hs.hello.random = make([]byte, 32)
+ 	if _, err := io.ReadFull(c.config.rand(), hs.hello.random); err != nil {
+ 		c.sendAlert(alertInternalError)
+@@ -263,6 +377,10 @@
+ 	preferredGroups = slices.DeleteFunc(preferredGroups, func(group CurveID) bool {
+ 		return !slices.Contains(hs.clientHello.supportedCurves, group)
+ 	})
++	// HRR 对照路径使用经典曲线，避免选中 Go 不支持在 HRR 中重发的 X25519MLKEM768。
++	if protocolTypeKEX(hs.protocoltype) == GoogleHelloRetryRequest {
++		preferredGroups = slices.DeleteFunc(preferredGroups, isPQKeyExchange)
++	}
+ 	if len(preferredGroups) == 0 {
+ 		c.sendAlert(alertHandshakeFailure)
+ 		return errors.New("tls: no key exchanges supported by both client and server")
+@@ -282,6 +400,16 @@
+ 		return isPQKeyExchange(preferredGroups[i]) && !isPQKeyExchange(preferredGroups[j])
+ 	})
+ 	selectedGroup := preferredGroups[0]
++	// HRR 对照路径要选一个客户端尚未发送 key_share 的曲线，否则客户端会
++	// 认为这是不必要的 HelloRetryRequest。
++	if protocolTypeKEX(hs.protocoltype) == GoogleHelloRetryRequest {
++		for _, g := range preferredGroups {
++			if !hasKeyShare(g) {
++				selectedGroup = g
++				break
++			}
++		}
++	}
+ 
+ 	var clientKeyShare *keyShare
+ 	for _, ks := range hs.clientHello.keyShares {
+@@ -298,11 +426,6 @@
+ 			return err
+ 		}
+ 		clientKeyShare = ks
+-		if hs.clientHello.ProtocolType == QuantumSupportAKEX {
+-			hs.protocoltype = QuantumSupportAKEX
+-		} else {
+-			hs.protocoltype = QuantumSupportKEX
+-		}
+ 	}
+ 
+ 	// 👈 这里识别到不是google的机制，再进行判断是否需要发送GoogleHelloRetryRequest
+@@ -315,18 +438,6 @@
+ 	}
+ 	c.curveID = selectedGroup
+ 
+-	// 👈 这里检查双方的交互类型是否匹配
+-	// 👈 这里需要加一个条件，就是双方都强制执行自己的协议类型，那么不匹配才要退化到经典版本
+-	if hs.protocoltypestrict == 1 && hs.clientHello.ProtocolTypeStrict == 1 {
+-		if hs.protocoltype == hs.clientHello.ProtocolType {
+-			hs.hello.ProtocolType = hs.protocoltype
+-		} else {
+-			hs.hello.ProtocolType = ClassicAKE
+-		}
+-	} else {
+-		hs.hello.ProtocolType = hs.protocoltype
+-	}
+-
+ 	// 👈记录协议类型和处理客户端公钥
+ 	if hs.protocoltype%10 == QuantumSupportKEX {
+ 		var pqCiphertext []byte
+@@ -673,12 +784,9 @@
+ 	//} else {
+ 	//	tmp = GoogleHelloRetryRequest
+ 	//}
+-	var tmp uint16
+-	if hs.protocoltype%10 == GoogleHelloRetryRequest {
+-		tmp = GoogleHelloRetryRequest
+-	} else {
+-		tmp = ClassicAKE
+-	}
++	// HRR 也携带完整的协商类型（例如 12/22），而不是只带密钥交换编号 2，
++	// 这样客户端才能校验认证分支没有被降级。
++	tmp := hs.protocoltype
+ 	helloRetryRequest := &serverHelloMsg{
+ 		vers:              hs.hello.vers,
+ 		random:            helloRetryRequestRandom,
+@@ -770,7 +878,7 @@
+ 
+ 	if len(clientHello.keyShares) != 1 {
+ 		c.sendAlert(alertIllegalParameter)
+-		return nil, errors.New("tls: client didn't send one key share in second ClientHello")
++		return nil, fmt.Errorf("tls: client didn't send one key share in second ClientHello (got %d)", len(clientHello.keyShares))
+ 	}
+ 	ks := &clientHello.keyShares[0]
+ 
+@@ -1408,8 +1516,8 @@
+ 			}
+ 			hs.persistentssKEM = ss
+ 		}
+-		// 👈 向client端这里发送密文只有两种情况，双方都是KEM证书，或者对方是KEM证书并且自己这边还是不强制执行自己的，并且还没有退化到经典TLS协议
+-		if ((hs.protocoltype/10)*10 == QuantumSupportKemCert && (hs.clientHello.ProtocolType/10)*10 == QuantumSupportKemCert) || ((hs.clientHello.ProtocolType/10)*10 == QuantumSupportKemCert && hs.protocoltype != ClassicAKE) {
++		// 👈 协商结果为 KEM 证书认证时，服务端向客户端证书封装密文（type 252）。
++		if protocolTypeAuth(hs.protocoltype) == QuantumSupportKemCert {
+ 			certs := make([]*x509.Certificate, len(certMsg.certificate.Certificate))
+ 			for i, asn1Data := range certMsg.certificate.Certificate {
+ 				cert, err := globalCertCache.newCert(asn1Data)
+diff -ruN backup-before-negotiation/tls/protocol_type_test.go extracted/go_kemtls/src/crypto/tls/protocol_type_test.go
+--- a/src/crypto/tls/protocol_type_test.go	1970-01-01 08:00:00.000000000 +0800
++++ b/src/crypto/tls/protocol_type_test.go	2026-11-20 10:29:16.582075706 +0800
+@@ -0,0 +1,83 @@
++package tls
++
++import "testing"
++
++func TestProtocolTypeValid(t *testing.T) {
++	valid := []uint16{0, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23}
++	for _, tt := range valid {
++		if !protocolTypeValid(tt) {
++			t.Errorf("protocolTypeValid(%d) = false, want true", tt)
++		}
++	}
++	invalid := []uint16{4, 5, 9, 14, 19, 24, 30, 99}
++	for _, tt := range invalid {
++		if protocolTypeValid(tt) {
++			t.Errorf("protocolTypeValid(%d) = true, want false", tt)
++		}
++	}
++}
++
++func TestProtocolTypeList(t *testing.T) {
++	tests := []struct {
++		name string
++		c    *Config
++		want []uint16
++	}{
++		{
++			name: "legacy single type",
++			c:    &Config{ProtocolType: 11},
++			want: []uint16{11},
++		},
++		{
++			name: "explicit list keeps order",
++			c:    &Config{ProtocolTypes: []uint16{23, 20}},
++			want: []uint16{23, 20},
++		},
++		{
++			name: "dedupe",
++			c:    &Config{ProtocolTypes: []uint16{13, 13, 0}},
++			want: []uint16{13, 0},
++		},
++		{
++			name: "compat appends classic fallback",
++			c:    &Config{ProtocolTypes: []uint16{13}, ModeCompatibilityFlag: true},
++			want: []uint16{13, 0},
++		},
++		{
++			name: "strict keeps only advertised",
++			c:    &Config{ProtocolTypes: []uint16{13}, ModeCompatibilityFlag: false},
++			want: []uint16{13},
++		},
++		{
++			name: "invalid entries ignored",
++			c:    &Config{ProtocolTypes: []uint16{99, 21}},
++			want: []uint16{21},
++		},
++	}
++	for _, tc := range tests {
++		got := tc.c.protocolTypeList()
++		if len(got) != len(tc.want) {
++			t.Fatalf("%s: got %v, want %v", tc.name, got, tc.want)
++		}
++		for i := range got {
++			if got[i] != tc.want[i] {
++				t.Fatalf("%s: got %v, want %v", tc.name, got, tc.want)
++			}
++		}
++	}
++}
++
++func TestProtocolTypeStrict(t *testing.T) {
++	if (&Config{ProtocolType: 11}).protocolTypeStrict() {
++		t.Error("legacy zero-value ProtocolTypeStrict must be flexible")
++	}
++	if !(&Config{ProtocolType: 11, ProtocolTypeStrict: 1}).protocolTypeStrict() {
++		t.Error("legacy ProtocolTypeStrict=1 must be strict")
++	}
++	if (&Config{ProtocolTypes: []uint16{11}, ModeCompatibilityFlag: true}).protocolTypeStrict() {
++		t.Error("ModeCompatibilityFlag=true must be flexible")
++	}
++	if !(&Config{ProtocolTypes: []uint16{11}}).protocolTypeStrict() {
++		t.Error("ModeCompatibilityFlag=false with a list must be strict")
++	}
++}

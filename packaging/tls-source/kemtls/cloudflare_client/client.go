@@ -8,8 +8,32 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
+
+// protocolConfigFromEnv 与 server 端保持一致，便于矩阵测试。
+func protocolConfigFromEnv(defaultType uint16) (uint16, []uint16, bool) {
+	primary := defaultType
+	if v := os.Getenv("KEMTLS_PROTOCOL_TYPE"); v != "" {
+		if n, err := strconv.ParseUint(v, 0, 16); err == nil {
+			primary = uint16(n)
+		}
+	}
+	var list []uint16
+	if v := os.Getenv("KEMTLS_PROTOCOL_TYPES"); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if n, err := strconv.ParseUint(part, 0, 16); err == nil {
+				list = append(list, uint16(n))
+			}
+		}
+	}
+	return primary, list, os.Getenv("KEMTLS_MODE_COMPAT") == "1"
+}
 
 func loadRootCA() (*x509.CertPool, error) {
 	rootPEM, err := os.ReadFile("pqcerts/root-ca.pem")
@@ -66,13 +90,17 @@ func main() {
 		log.Fatalf("loadClientCertificate failed: %v", err)
 	}
 
+	protocolType, protocolTypes, modeCompat := protocolConfigFromEnv(tls.QuantumSupportAKEX)
+
 	tlsConfig := &tls.Config{
 		RootCAs: rootCAs,
 		// 👇 这里一定要写证书里的域名
 		ServerName: "quantum-secure.example.com",
 		//ProtocolType:       tls.QuantumSupportKemCert_KEX,
-		ProtocolType:       tls.QuantumSupportAKEX,
-		ProtocolTypeStrict: 0, // 👈 这里表示是不是强制需要执行这个协议版本
+		ProtocolType:          protocolType,
+		ProtocolTypes:         protocolTypes,
+		ModeCompatibilityFlag: modeCompat,
+		ProtocolTypeStrict:    0, // 👈 旧接口，保留兼容；新配置用 ModeCompatibilityFlag
 
 		// 👈 新增 ✅ 关键：客户端证书（发给 server）
 		Certificates: []tls.Certificate{clientCert},
