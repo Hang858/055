@@ -1,0 +1,445 @@
+diff -ruN .build/stage4-tree/src/crypto/tls/ahs_test.go .build/extracted/go_kemtls/src/crypto/tls/ahs_test.go
+--- a/src/crypto/tls/ahs_test.go	1970-01-01 08:00:00.000000000 +0800
++++ b/src/crypto/tls/ahs_test.go	2026-11-20 17:00:42.717959577 +0800
+@@ -0,0 +1,33 @@
++package tls
++
++import (
++	"bytes"
++	"crypto/internal/fips140/tls13"
++	"crypto/sha256"
++	"testing"
++)
++
++func TestAuthenticatedHandshakeSecret(t *testing.T) {
++	hs := tls13.NewEarlySecret(sha256.New, nil).HandshakeSecret([]byte("ecdh"))
++	ahs := hs.AuthenticatedHandshakeSecret([]byte("kem-secret"))
++
++	clientAHS := ahs.ClientAuthenticatedHandshakeTrafficSecret(sha256.New())
++	serverAHS := ahs.ServerAuthenticatedHandshakeTrafficSecret(sha256.New())
++	if bytes.Equal(clientAHS, serverAHS) {
++		t.Fatal("client and server AHS traffic secrets must differ")
++	}
++	if bytes.Equal(clientAHS, hs.ClientHandshakeTrafficSecret(sha256.New())) {
++		t.Fatal("AHS traffic secret must differ from the initial handshake secret")
++	}
++	if !bytes.Equal(clientAHS, ahs.ClientAuthenticatedHandshakeTrafficSecret(sha256.New())) {
++		t.Fatal("AHS derivation must be deterministic")
++	}
++	if !bytes.Equal(clientAHS, hs.AuthenticatedHandshakeSecret([]byte("kem-secret")).ClientAuthenticatedHandshakeTrafficSecret(sha256.New())) {
++		t.Fatal("AHS derivation from the same inputs must be stable")
++	}
++
++	app := ahs.MasterSecret().ClientApplicationTrafficSecret(sha256.New())
++	if bytes.Equal(app, hs.MasterSecret().ClientApplicationTrafficSecret(sha256.New())) {
++		t.Fatal("AHS-derived application secret must differ from the legacy master")
++	}
++}
+diff -ruN .build/stage4-tree/src/crypto/tls/handshake_client_tls13.go .build/extracted/go_kemtls/src/crypto/tls/handshake_client_tls13.go
+--- a/src/crypto/tls/handshake_client_tls13.go	2026-11-20 17:01:11.461713427 +0800
++++ b/src/crypto/tls/handshake_client_tls13.go	2026-11-20 16:59:01.298658550 +0800
+@@ -39,13 +39,15 @@
+ 	earlySecret *tls13.EarlySecret
+ 	binderKey   []byte
+ 
+-	certReq       *certificateRequestMsgTLS13
+-	usingPSK      bool
+-	sentDummyCCS  bool
+-	suite         *cipherSuiteTLS13
+-	transcript    hash.Hash
+-	masterSecret  *tls13.MasterSecret
+-	trafficSecret []byte // client_application_traffic_secret_0
++	certReq         *certificateRequestMsgTLS13
++	usingPSK        bool
++	sentDummyCCS    bool
++	suite           *cipherSuiteTLS13
++	transcript      hash.Hash
++	handshakeSecret *tls13.HandshakeSecret
++	ahs             *tls13.AuthenticatedHandshakeSecret
++	masterSecret    *tls13.MasterSecret
++	trafficSecret   []byte // client_application_traffic_secret_0
+ 
+ 	echContext *echClientContext
+ 	//👈 这里记录了协议交互的具体类型
+@@ -211,17 +213,34 @@
+ 	if err := hs.readServerCertificate(); err != nil {
+ 		return err
+ 	}
+-	if err := hs.readServerFinished(); err != nil {
+-		return err
+-	}
+-	if err := hs.sendClientCertificate(); err != nil {
+-		return err
+-	}
+-	if err := hs.sendClientFinished(); err != nil {
+-		return err
+-	}
+-	if _, err := c.flush(); err != nil {
+-		return err
++	if hs.serverauth == AuthKEM || hs.clientauth == AuthKEM {
++		// FA-TLS 两阶段：服务器第一飞行没有 Finished；客户端先发 Finished，
++		// 再读取服务器在 AHS 下发送的 Finished。
++		if err := hs.sendClientCertificate(); err != nil {
++			return err
++		}
++		if err := hs.sendClientFinishedAHS(); err != nil {
++			return err
++		}
++		if _, err := c.flush(); err != nil {
++			return err
++		}
++		if err := hs.readServerFinishedAHS(); err != nil {
++			return err
++		}
++	} else {
++		if err := hs.readServerFinished(); err != nil {
++			return err
++		}
++		if err := hs.sendClientCertificate(); err != nil {
++			return err
++		}
++		if err := hs.sendClientFinished(); err != nil {
++			return err
++		}
++		if _, err := c.flush(); err != nil {
++			return err
++		}
+ 	}
+ 
+ 	if hs.echContext != nil && hs.echContext.echRejected {
+@@ -657,6 +676,7 @@
+ 	}
+ 
+ 	handshakeSecret := earlySecret.HandshakeSecret(sharedKey)
++	hs.handshakeSecret = handshakeSecret
+ 
+ 	clientSecret := handshakeSecret.ClientHandshakeTrafficSecret(hs.transcript)
+ 	c.out.setTrafficSecret(hs.suite, QUICEncryptionLevelHandshake, clientSecret)
+@@ -1149,7 +1169,7 @@
+ 	}
+ 
+ 	if hs.serverauth == AuthKEM || hs.clientauth == AuthKEM {
+-		if err := hs.deriveKEMApplicationSecrets(); err != nil {
++		if err := hs.deriveAuthenticatedHandshake(); err != nil {
+ 			return err
+ 		}
+ 	}
+@@ -1157,6 +1177,88 @@
+ 	return nil
+ }
+ 
++// deriveAuthenticatedHandshake 用两段 KEM 秘密派生 AHS，并安装认证握手
++// 流量密钥。之后的 Finished 都在 AHS 下发送。
++func (hs *clientHandshakeStateTLS13) deriveAuthenticatedHandshake() error {
++	c := hs.c
++	if len(hs.persistentssKEM) == 0 && len(hs.persistentssKEM_Client) == 0 {
++		c.sendAlert(alertInternalError)
++		return errors.New("tls: missing KEM secrets for authenticated handshake")
++	}
++	hs.ahs = hs.handshakeSecret.AuthenticatedHandshakeSecret(
++		kemSecretInput(hs.persistentssKEM, hs.persistentssKEM_Client))
++	clientSecret := hs.ahs.ClientAuthenticatedHandshakeTrafficSecret(hs.transcript)
++	serverSecret := hs.ahs.ServerAuthenticatedHandshakeTrafficSecret(hs.transcript)
++	c.out.setTrafficSecret(hs.suite, QUICEncryptionLevelHandshake, clientSecret)
++	c.in.setTrafficSecret(hs.suite, QUICEncryptionLevelHandshake, serverSecret)
++	if c.quic != nil {
++		if c.hand.Len() != 0 {
++			c.sendAlert(alertUnexpectedMessage)
++		}
++		c.quicSetWriteSecret(QUICEncryptionLevelHandshake, hs.suite.id, clientSecret)
++		c.quicSetReadSecret(QUICEncryptionLevelHandshake, hs.suite.id, serverSecret)
++	}
++	return nil
++}
++
++// sendClientFinishedAHS 在 AHS 下发送客户端 Finished；应用密钥要等服务器
++// Finished 收到后再派生。
++func (hs *clientHandshakeStateTLS13) sendClientFinishedAHS() error {
++	c := hs.c
++	finished := &finishedMsg{
++		verifyData: hs.suite.finishedHash(c.out.trafficSecret, hs.transcript),
++	}
++	_, err := hs.c.writeHandshakeRecord(finished, hs.transcript)
++	return err
++}
++
++// readServerFinishedAHS 在 AHS 下验证服务器 Finished，并派生应用密钥。
++func (hs *clientHandshakeStateTLS13) readServerFinishedAHS() error {
++	c := hs.c
++	msg, err := c.readHandshake(nil)
++	if err != nil {
++		return err
++	}
++	finished, ok := msg.(*finishedMsg)
++	if !ok {
++		c.sendAlert(alertUnexpectedMessage)
++		return unexpectedMessageError(finished, msg)
++	}
++	expected := hs.suite.finishedHash(c.in.trafficSecret, hs.transcript)
++	if !hmac.Equal(expected, finished.verifyData) {
++		c.sendAlert(alertDecryptError)
++		return errors.New("tls: invalid server finished hash under AHS")
++	}
++	if err := transcriptMsg(finished, hs.transcript); err != nil {
++		return err
++	}
++	hs.masterSecret = hs.ahs.MasterSecret()
++	hs.trafficSecret = hs.masterSecret.ClientApplicationTrafficSecret(hs.transcript)
++	serverSecret := hs.masterSecret.ServerApplicationTrafficSecret(hs.transcript)
++	c.out.setTrafficSecret(hs.suite, QUICEncryptionLevelApplication, hs.trafficSecret)
++	c.in.setTrafficSecret(hs.suite, QUICEncryptionLevelApplication, serverSecret)
++	if c.quic != nil {
++		if c.hand.Len() != 0 {
++			c.sendAlert(alertUnexpectedMessage)
++		}
++		c.quicSetWriteSecret(QUICEncryptionLevelApplication, hs.suite.id, hs.trafficSecret)
++		c.quicSetReadSecret(QUICEncryptionLevelApplication, hs.suite.id, serverSecret)
++	}
++	if err := c.config.writeKeyLog(keyLogLabelClientTraffic, hs.hello.random, hs.trafficSecret); err != nil {
++		c.sendAlert(alertInternalError)
++		return err
++	}
++	if err := c.config.writeKeyLog(keyLogLabelServerTraffic, hs.hello.random, serverSecret); err != nil {
++		c.sendAlert(alertInternalError)
++		return err
++	}
++	c.ekm = hs.suite.exportKeyingMaterial(hs.masterSecret, hs.transcript)
++	if !c.config.SessionTicketsDisabled && c.config.ClientSessionCache != nil {
++		c.resumptionSecret = hs.masterSecret.ResumptionMasterSecret(hs.transcript)
++	}
++	return nil
++}
++
+ func (hs *clientHandshakeStateTLS13) sendClientFinished() error {
+ 	c := hs.c
+ 
+diff -ruN .build/stage4-tree/src/crypto/tls/handshake_server_tls13.go .build/extracted/go_kemtls/src/crypto/tls/handshake_server_tls13.go
+--- a/src/crypto/tls/handshake_server_tls13.go	2026-11-20 17:01:11.462230943 +0800
++++ b/src/crypto/tls/handshake_server_tls13.go	2026-11-20 16:58:46.513863166 +0800
+@@ -65,6 +65,7 @@
+ 	earlySecret     *tls13.EarlySecret
+ 	sharedKey       []byte
+ 	handshakeSecret *tls13.HandshakeSecret
++	ahs             *tls13.AuthenticatedHandshakeSecret
+ 	masterSecret    *tls13.MasterSecret
+ 	trafficSecret   []byte // client_application_traffic_secret_0
+ 	transcript      hash.Hash
+@@ -104,34 +105,54 @@
+ 	if err := hs.sendServerCertificate(); err != nil {
+ 		return err
+ 	}
+-	if err := hs.sendServerFinished(); err != nil {
+-		return err
+-	}
+-	// Note that at this point we could start sending application data without
+-	// waiting for the client's second flight, but the application might not
+-	// expect the lack of replay protection of the ClientHello parameters.
+-	if _, err := c.flush(); err != nil {
+-		return err
+-	}
+-	if err := hs.readClientCertificate(); err != nil {
+-		return err
+-	}
+-	// 👈 这里拓展一个专利中才能用到的过程就是client端收到并发送密文
+ 	if hs.serverauth == AuthKEM || hs.clientauth == AuthKEM {
++		// FA-TLS 两阶段：服务器第一飞行不发 Finished，等 KEM 认证完成、
++		// 双方安装 AHS 后，客户端 Finished 在前、服务器 Finished 在后。
++		if _, err := c.flush(); err != nil {
++			return err
++		}
++		if err := hs.readClientCertificate(); err != nil {
++			return err
++		}
+ 		if hs.clientauth == AuthKEM {
+ 			if err := hs.sendServerCiphertext(); err != nil {
+ 				return err
+ 			}
+ 		}
+-		if err := hs.deriveKEMApplicationSecrets(); err != nil {
++		if err := hs.deriveAuthenticatedHandshake(); err != nil {
+ 			return err
+ 		}
+-		if err := hs.sendSessionTickets(); err != nil {
++		if _, err := c.flush(); err != nil {
++			return err
++		}
++		if err := hs.readClientFinishedAHS(); err != nil {
++			return err
++		}
++		if err := hs.sendServerFinishedAHS(); err != nil {
++			return err
++		}
++		if _, err := c.flush(); err != nil {
++			return err
++		}
++		if err := hs.sendSessionTicketsAHS(); err != nil {
++			return err
++		}
++	} else {
++		if err := hs.sendServerFinished(); err != nil {
++			return err
++		}
++		// Note that at this point we could start sending application data without
++		// waiting for the client's second flight, but the application might not
++		// expect the lack of replay protection of the ClientHello parameters.
++		if _, err := c.flush(); err != nil {
++			return err
++		}
++		if err := hs.readClientCertificate(); err != nil {
++			return err
++		}
++		if err := hs.readClientFinished(); err != nil {
+ 			return err
+ 		}
+-	}
+-	if err := hs.readClientFinished(); err != nil {
+-		return err
+ 	}
+ 
+ 	c.isHandshakeComplete.Store(true)
+@@ -1398,6 +1419,95 @@
+ 	return nil
+ }
+ 
++// deriveAuthenticatedHandshake 用两段 KEM 秘密派生 AHS，并安装认证握手
++// 流量密钥。此后的 Finished 都在 AHS 下发送。
++func (hs *serverHandshakeStateTLS13) deriveAuthenticatedHandshake() error {
++	c := hs.c
++	if len(hs.persistentssKEM) == 0 && len(hs.persistentssKEM_Client) == 0 {
++		c.sendAlert(alertInternalError)
++		return errors.New("tls: missing KEM secrets for authenticated handshake")
++	}
++	hs.ahs = hs.handshakeSecret.AuthenticatedHandshakeSecret(
++		kemSecretInput(hs.persistentssKEM, hs.persistentssKEM_Client))
++	clientSecret := hs.ahs.ClientAuthenticatedHandshakeTrafficSecret(hs.transcript)
++	serverSecret := hs.ahs.ServerAuthenticatedHandshakeTrafficSecret(hs.transcript)
++	c.in.setTrafficSecret(hs.suite, QUICEncryptionLevelHandshake, clientSecret)
++	c.out.setTrafficSecret(hs.suite, QUICEncryptionLevelHandshake, serverSecret)
++	if c.quic != nil {
++		if c.hand.Len() != 0 {
++			c.sendAlert(alertUnexpectedMessage)
++		}
++		c.quicSetReadSecret(QUICEncryptionLevelHandshake, hs.suite.id, clientSecret)
++		c.quicSetWriteSecret(QUICEncryptionLevelHandshake, hs.suite.id, serverSecret)
++	}
++	log.Printf("AHS 已安装 ss_server=%d ss_client=%d", len(hs.persistentssKEM), len(hs.persistentssKEM_Client))
++	return nil
++}
++
++// readClientFinishedAHS 在 AHS 下读取并验证客户端 Finished。
++func (hs *serverHandshakeStateTLS13) readClientFinishedAHS() error {
++	c := hs.c
++	msg, err := c.readHandshake(nil)
++	if err != nil {
++		return err
++	}
++	finished, ok := msg.(*finishedMsg)
++	if !ok {
++		c.sendAlert(alertUnexpectedMessage)
++		return unexpectedMessageError(finished, msg)
++	}
++	expected := hs.suite.finishedHash(c.in.trafficSecret, hs.transcript)
++	if !hmac.Equal(expected, finished.verifyData) {
++		c.sendAlert(alertDecryptError)
++		return errors.New("tls: invalid client finished hash under AHS")
++	}
++	return transcriptMsg(finished, hs.transcript)
++}
++
++// sendServerFinishedAHS 在 AHS 下发服务器 Finished，然后从 AHS 派生应用密钥。
++func (hs *serverHandshakeStateTLS13) sendServerFinishedAHS() error {
++	c := hs.c
++	finished := &finishedMsg{
++		verifyData: hs.suite.finishedHash(c.out.trafficSecret, hs.transcript),
++	}
++	if _, err := hs.c.writeHandshakeRecord(finished, hs.transcript); err != nil {
++		return err
++	}
++	hs.masterSecret = hs.ahs.MasterSecret()
++	hs.trafficSecret = hs.masterSecret.ClientApplicationTrafficSecret(hs.transcript)
++	serverSecret := hs.masterSecret.ServerApplicationTrafficSecret(hs.transcript)
++	c.out.setTrafficSecret(hs.suite, QUICEncryptionLevelApplication, serverSecret)
++	c.in.setTrafficSecret(hs.suite, QUICEncryptionLevelApplication, hs.trafficSecret)
++	if c.quic != nil {
++		if c.hand.Len() != 0 {
++			c.sendAlert(alertUnexpectedMessage)
++		}
++		c.quicSetWriteSecret(QUICEncryptionLevelApplication, hs.suite.id, serverSecret)
++		c.quicSetReadSecret(QUICEncryptionLevelApplication, hs.suite.id, hs.trafficSecret)
++	}
++	if err := c.config.writeKeyLog(keyLogLabelClientTraffic, hs.clientHello.random, hs.trafficSecret); err != nil {
++		c.sendAlert(alertInternalError)
++		return err
++	}
++	if err := c.config.writeKeyLog(keyLogLabelServerTraffic, hs.clientHello.random, serverSecret); err != nil {
++		c.sendAlert(alertInternalError)
++		return err
++	}
++	c.ekm = hs.suite.exportKeyingMaterial(hs.masterSecret, hs.transcript)
++	return nil
++}
++
++// sendSessionTicketsAHS 在客户端 Finished 已进入 transcript 后计算 resumption
++// secret 并发送 ticket。
++func (hs *serverHandshakeStateTLS13) sendSessionTicketsAHS() error {
++	c := hs.c
++	c.resumptionSecret = hs.masterSecret.ResumptionMasterSecret(hs.transcript)
++	if !hs.shouldSendSessionTickets() {
++		return nil
++	}
++	return c.sendSessionTicket(false, nil)
++}
++
+ func (hs *serverHandshakeStateTLS13) shouldSendSessionTickets() bool {
+ 	if hs.c.config.SessionTicketsDisabled {
+ 		return false
+diff -ruN .build/stage4-tree/src/crypto/internal/fips140/tls13/tls13.go .build/extracted/go_kemtls/src/crypto/internal/fips140/tls13/tls13.go
+--- a/src/crypto/internal/fips140/tls13/tls13.go	2026-11-20 10:34:16.463853218 +0800
++++ b/src/crypto/internal/fips140/tls13/tls13.go	2026-11-20 16:58:04.610938231 +0800
+@@ -112,6 +112,46 @@
+ 	return deriveSecret(s.hash, s.secret, serverHandshakeTrafficLabel, transcript)
+ }
+ 
++// AuthenticatedHandshakeSecret 是 FA-TLS 两阶段密钥调度的第二阶段：
++// 在证书/KEM 认证完成后，用初始 HandshakeSecret 和 KEM 认证秘密再
++// HKDF-Extract 一次，得到 AHS。
++type AuthenticatedHandshakeSecret struct {
++	secret []byte
++	hash   func() hash.Hash
++}
++
++// AuthenticatedHandshakeSecret derives AHS from the initial handshake secret
++// and the certificate-based KEM secret.
++func (s *HandshakeSecret) AuthenticatedHandshakeSecret(kemSecret []byte) *AuthenticatedHandshakeSecret {
++	derived := deriveSecret(s.hash, s.secret, "derived", nil)
++	return &AuthenticatedHandshakeSecret{
++		secret: extract(s.hash, kemSecret, derived),
++		hash:   s.hash,
++	}
++}
++
++// ClientAuthenticatedHandshakeTrafficSecret derives the client authenticated
++// handshake traffic secret from AHS and the authenticated transcript.
++func (s *AuthenticatedHandshakeSecret) ClientAuthenticatedHandshakeTrafficSecret(transcript hash.Hash) []byte {
++	return deriveSecret(s.hash, s.secret, "fa c ahs traffic", transcript)
++}
++
++// ServerAuthenticatedHandshakeTrafficSecret derives the server authenticated
++// handshake traffic secret from AHS and the authenticated transcript.
++func (s *AuthenticatedHandshakeSecret) ServerAuthenticatedHandshakeTrafficSecret(transcript hash.Hash) []byte {
++	return deriveSecret(s.hash, s.secret, "fa s ahs traffic", transcript)
++}
++
++// MasterSecret derives the master secret from AHS, mirroring the TLS 1.3
++// HandshakeSecret.MasterSecret derivation.
++func (s *AuthenticatedHandshakeSecret) MasterSecret() *MasterSecret {
++	derived := deriveSecret(s.hash, s.secret, "derived", nil)
++	return &MasterSecret{
++		secret: extract(s.hash, nil, derived),
++		hash:   s.hash,
++	}
++}
++
+ type MasterSecret struct {
+ 	secret []byte
+ 	hash   func() hash.Hash

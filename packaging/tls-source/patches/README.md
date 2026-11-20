@@ -162,3 +162,29 @@ patch -p1 < heterogeneous-auth.patch
 
 边界：仍是单阶段密钥调度，未实现 FA-TLS 的 AHS 和独立 KEMEncapsulation 消息。
 详见 `docs/双向异构认证-20261120.md`。
+
+## ahs-key-schedule.patch
+
+对应 2026-11-20 的 AHS 两阶段认证握手：
+
+- `crypto/internal/fips140/tls13` 增加
+  `AuthenticatedHandshakeSecret`，从初始 HS + KEM 认证秘密派生 AHS；
+- KEM 认证模式（Sig-KEM/KEM-Sig/KEM-KEM）在认证完成后安装 AHS 握手密钥；
+- 客户端 Finished 先发、服务器 Finished 后发，两者都在 AHS 下；
+- 应用密钥、exporter、resumption 从 AHS.MasterSecret 派生；
+- Sig-Sig/ClassicAKE 保持原 TLS 1.3 顺序。
+
+应用顺序：
+
+```bash
+patch -p1 < slhdsa-tls-handshake.patch
+patch -p1 < kem-registry-tls.patch
+patch -p1 < protocol-mode-negotiation.patch
+patch -p1 < kem-key-schedule.patch
+patch -p1 < pq-certificate-chain.patch
+patch -p1 < heterogeneous-auth.patch
+patch -p1 < ahs-key-schedule.patch
+```
+
+边界：KEM 密文仍复用 Certificate/type 252，未改成独立 KEMEncapsulation 消息。
+详见 `docs/AHS两阶段密钥调度-20261120.md`。
