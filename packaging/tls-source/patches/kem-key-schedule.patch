@@ -1,6 +1,6 @@
 diff -ruN .build/stage1-tree/src/crypto/tls/handshake_client_tls13.go .build/extracted/go_kemtls/src/crypto/tls/handshake_client_tls13.go
 --- a/src/crypto/tls/handshake_client_tls13.go	2026-11-20 10:36:00.529191553 +0800
-+++ b/src/crypto/tls/handshake_client_tls13.go	2026-11-20 10:34:36.248807053 +0800
++++ b/src/crypto/tls/handshake_client_tls13.go	2026-11-20 10:37:13.865754124 +0800
 @@ -923,6 +923,12 @@
  
  	// Derive secrets that take context through the server Finished.
@@ -61,6 +61,17 @@ diff -ruN .build/stage1-tree/src/crypto/tls/handshake_client_tls13.go .build/ext
  	return nil
  }
  
+@@ -1105,6 +1144,10 @@
+ 		return err
+ 	}
+ 
++	if protocolTypeAuth(hs.protocoltype) == QuantumSupportKemCert && len(hs.trafficSecret) == 0 {
++		c.sendAlert(alertInternalError)
++		return errors.New("tls: missing KEM application secret")
++	}
+ 	c.out.setTrafficSecret(hs.suite, QUICEncryptionLevelApplication, hs.trafficSecret)
+ 
+ 	if !c.config.SessionTicketsDisabled && c.config.ClientSessionCache != nil {
 diff -ruN .build/stage1-tree/src/crypto/tls/handshake_server_tls13.go .build/extracted/go_kemtls/src/crypto/tls/handshake_server_tls13.go
 --- a/src/crypto/tls/handshake_server_tls13.go	2026-11-20 10:36:00.529987801 +0800
 +++ b/src/crypto/tls/handshake_server_tls13.go	2026-11-20 10:34:27.128387635 +0800
