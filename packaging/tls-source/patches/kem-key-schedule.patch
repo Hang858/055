@@ -1,0 +1,177 @@
+diff -ruN .build/stage1-tree/src/crypto/tls/handshake_client_tls13.go .build/extracted/go_kemtls/src/crypto/tls/handshake_client_tls13.go
+--- a/src/crypto/tls/handshake_client_tls13.go	2026-11-20 10:36:00.529191553 +0800
++++ b/src/crypto/tls/handshake_client_tls13.go	2026-11-20 10:34:36.248807053 +0800
+@@ -923,6 +923,12 @@
+ 
+ 	// Derive secrets that take context through the server Finished.
+ 
++	// KEM 证书模式要等 type 252 收到、两段 KEM 共享秘密都到手后，才能派生
++	// 应用流量密钥；见 deriveKEMApplicationSecrets。
++	if protocolTypeAuth(hs.protocoltype) == QuantumSupportKemCert {
++		return nil
++	}
++
+ 	hs.trafficSecret = hs.masterSecret.ClientApplicationTrafficSecret(hs.transcript)
+ 	serverSecret := hs.masterSecret.ServerApplicationTrafficSecret(hs.transcript)
+ 	c.in.setTrafficSecret(hs.suite, QUICEncryptionLevelApplication, serverSecret)
+@@ -943,6 +949,33 @@
+ 	return nil
+ }
+ 
++// deriveKEMApplicationSecrets 在收到 type 252 之后，把两段 KEM 共享秘密混入
++// master secret，并安装服务端应用流量密钥。客户端 Finished 仍用握手密钥发送，
++// 所以这里只安装 c.in；c.out 在 sendClientFinished 末尾安装。
++func (hs *clientHandshakeStateTLS13) deriveKEMApplicationSecrets() error {
++	c := hs.c
++	if len(hs.persistentssKEM) == 0 || len(hs.persistentssKEM_Client) == 0 {
++		c.sendAlert(alertInternalError)
++		return errors.New("tls: missing KEM secrets for application key derivation")
++	}
++	mixed := hs.masterSecret.WithKEMSecret(kemSecretInput(hs.persistentssKEM, hs.persistentssKEM_Client))
++	hs.masterSecret = mixed
++	hs.trafficSecret = mixed.ClientApplicationTrafficSecret(hs.transcript)
++	serverSecret := mixed.ServerApplicationTrafficSecret(hs.transcript)
++	c.in.setTrafficSecret(hs.suite, QUICEncryptionLevelApplication, serverSecret)
++	if err := c.config.writeKeyLog(keyLogLabelClientTraffic, hs.hello.random, hs.trafficSecret); err != nil {
++		c.sendAlert(alertInternalError)
++		return err
++	}
++	if err := c.config.writeKeyLog(keyLogLabelServerTraffic, hs.hello.random, serverSecret); err != nil {
++		c.sendAlert(alertInternalError)
++		return err
++	}
++	c.ekm = hs.suite.exportKeyingMaterial(mixed, hs.transcript)
++	log.Printf("KEM 客户端应用密钥已混入 ss_server=%d ss_client=%d", len(hs.persistentssKEM), len(hs.persistentssKEM_Client))
++	return nil
++}
++
+ func (hs *clientHandshakeStateTLS13) sendClientCertificate() error {
+ 	c := hs.c
+ 
+@@ -1082,6 +1115,12 @@
+ 
+ 	}
+ 
++	if protocolTypeAuth(hs.protocoltype) == QuantumSupportKemCert {
++		if err := hs.deriveKEMApplicationSecrets(); err != nil {
++			return err
++		}
++	}
++
+ 	return nil
+ }
+ 
+diff -ruN .build/stage1-tree/src/crypto/tls/handshake_server_tls13.go .build/extracted/go_kemtls/src/crypto/tls/handshake_server_tls13.go
+--- a/src/crypto/tls/handshake_server_tls13.go	2026-11-20 10:36:00.529987801 +0800
++++ b/src/crypto/tls/handshake_server_tls13.go	2026-11-20 10:34:27.128387635 +0800
+@@ -119,6 +119,9 @@
+ 		if err := hs.sendServerCiphertext(); err != nil {
+ 			return err
+ 		}
++		if err := hs.deriveKEMApplicationSecrets(); err != nil {
++			return err
++		}
+ 		if err := hs.sendSessionTickets(); err != nil {
+ 			return err
+ 		}
+@@ -1271,6 +1274,13 @@
+ 
+ 	hs.masterSecret = hs.handshakeSecret.MasterSecret()
+ 
++	// KEM 证书模式的应用流量密钥要等客户端证书处理完、两段 KEM 共享秘密
++	// 都到手后再派生（见 deriveKEMApplicationSecrets）。握手流量密钥不变，
++	// 因为服务端 Finished 必须先于客户端 KEM 贡献发送。
++	if protocolTypeAuth(hs.protocoltype) == QuantumSupportKemCert {
++		return nil
++	}
++
+ 	hs.trafficSecret = hs.masterSecret.ClientApplicationTrafficSecret(hs.transcript)
+ 	serverSecret := hs.masterSecret.ServerApplicationTrafficSecret(hs.transcript)
+ 	c.out.setTrafficSecret(hs.suite, QUICEncryptionLevelApplication, serverSecret)
+@@ -1308,6 +1318,39 @@
+ 	return nil
+ }
+ 
++// deriveKEMApplicationSecrets 把两段 KEM 共享秘密混入 master secret，再派生
++// 应用流量密钥、exporter 与 key log。必须在 type 252 发送之后调用：252 仍用
++// 握手密钥加密，客户端此时还没有安装应用密钥。
++func (hs *serverHandshakeStateTLS13) deriveKEMApplicationSecrets() error {
++	c := hs.c
++	if len(hs.persistentssKEM) == 0 || len(hs.persistentssKEM_Client) == 0 {
++		c.sendAlert(alertInternalError)
++		return errors.New("tls: missing KEM secrets for application key derivation")
++	}
++	mixed := hs.masterSecret.WithKEMSecret(kemSecretInput(hs.persistentssKEM, hs.persistentssKEM_Client))
++	hs.masterSecret = mixed
++	hs.trafficSecret = mixed.ClientApplicationTrafficSecret(hs.transcript)
++	serverSecret := mixed.ServerApplicationTrafficSecret(hs.transcript)
++	c.out.setTrafficSecret(hs.suite, QUICEncryptionLevelApplication, serverSecret)
++	if c.quic != nil {
++		if c.hand.Len() != 0 {
++			c.sendAlert(alertUnexpectedMessage)
++		}
++		c.quicSetWriteSecret(QUICEncryptionLevelApplication, hs.suite.id, serverSecret)
++	}
++	if err := c.config.writeKeyLog(keyLogLabelClientTraffic, hs.clientHello.random, hs.trafficSecret); err != nil {
++		c.sendAlert(alertInternalError)
++		return err
++	}
++	if err := c.config.writeKeyLog(keyLogLabelServerTraffic, hs.clientHello.random, serverSecret); err != nil {
++		c.sendAlert(alertInternalError)
++		return err
++	}
++	c.ekm = hs.suite.exportKeyingMaterial(mixed, hs.transcript)
++	log.Printf("KEM 应用密钥已混入 ss_server=%d ss_client=%d", len(hs.persistentssKEM), len(hs.persistentssKEM_Client))
++	return nil
++}
++
+ func (hs *serverHandshakeStateTLS13) shouldSendSessionTickets() bool {
+ 	if hs.c.config.SessionTicketsDisabled {
+ 		return false
+diff -ruN .build/stage1-tree/src/crypto/tls/key_schedule.go .build/extracted/go_kemtls/src/crypto/tls/key_schedule.go
+--- a/src/crypto/tls/key_schedule.go	2026-11-20 09:43:00.060725565 +0800
++++ b/src/crypto/tls/key_schedule.go	2026-11-20 10:34:18.697121479 +0800
+@@ -57,6 +57,17 @@
+ 	return verifyData.Sum(nil)
+ }
+ 
++// kemSecretInput 把两段 KEM 共享秘密编码成无歧义的输入：
++// uint16(ssServer)||ssServer||uint16(ssClient)||ssClient。
++func kemSecretInput(ssServer, ssClient []byte) []byte {
++	out := make([]byte, 0, 4+len(ssServer)+len(ssClient))
++	for _, ss := range [][]byte{ssServer, ssClient} {
++		out = append(out, byte(len(ss)>>8), byte(len(ss)))
++		out = append(out, ss...)
++	}
++	return out
++}
++
+ // exportKeyingMaterial implements RFC5705 exporters for TLS 1.3 according to
+ // RFC 8446, Section 7.5.
+ func (c *cipherSuiteTLS13) exportKeyingMaterial(s *tls13.MasterSecret, transcript hash.Hash) func(string, []byte, int) ([]byte, error) {
+diff -ruN .build/stage1-tree/src/crypto/internal/fips140/tls13/tls13.go .build/extracted/go_kemtls/src/crypto/internal/fips140/tls13/tls13.go
+--- a/src/crypto/internal/fips140/tls13/tls13.go	2025-08-27 23:49:40.000000000 +0800
++++ b/src/crypto/internal/fips140/tls13/tls13.go	2026-11-20 10:34:16.463853218 +0800
+@@ -125,6 +125,22 @@
+ 	}
+ }
+ 
++// WithKEMSecret mixes an external shared secret (the KEM certificate secrets)
++// into the master secret. TLS 1.3's standard schedule does not have a hook for
++// this, so the KEM mode replaces the master secret with
++// HKDF-Extract(salt=master, IKM=ssServer||ssClient) before deriving application
++// traffic secrets. Handshake traffic secrets are intentionally unaffected: the
++// server sends its Finished before it can know the client's KEM contribution.
++func (s *MasterSecret) WithKEMSecret(ikm []byte) *MasterSecret {
++	if len(ikm) == 0 {
++		return s
++	}
++	return &MasterSecret{
++		secret: extract(s.hash, ikm, s.secret),
++		hash:   s.hash,
++	}
++}
++
+ // ClientApplicationTrafficSecret derives the client_application_traffic_secret_0
+ // from the master secret and the transcript up to the server Finished.
+ func (s *MasterSecret) ClientApplicationTrafficSecret(transcript hash.Hash) []byte {

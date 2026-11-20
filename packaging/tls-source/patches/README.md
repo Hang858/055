@@ -61,9 +61,9 @@ patch -p1 < slhdsa-tls-handshake.patch
 patch -p1 < kem-registry-tls.patch
 ```
 
-安全边界：该补丁让 KEM 证书路径可以按注册表选择算法，并把 KEM SS 绑定到 client Finished；
-但 KEM SS 仍未进入 `key_schedule.go`，应用数据密钥仍来自 ECDHE，KEM 证书模式仍是
-RSA CertificateVerify + KEM 认证绑定，不是完整的 KEMTLS 密钥调度。
+安全边界：该补丁让 KEM 证书路径可以按注册表选择算法，并把 KEM SS 绑定到 client Finished。
+KEM SS 进入应用密钥调度由后续的 `kem-key-schedule.patch` 完成；即使应用补丁后，
+KEM 证书模式仍是“ECDHE 握手 + KEM 认证/密钥绑定”，不是完整的 KEMTLS。
 
 ## protocol-mode-negotiation.patch
 
@@ -89,3 +89,26 @@ patch -p1 < protocol-mode-negotiation.patch
 
 测试矩阵与边界见 `docs/协议类型协商-20261120.md`。
 
+
+## kem-key-schedule.patch
+
+对应 2026-11-20 的 KEM 密钥调度接入（阶段 2）：
+
+- `crypto/internal/fips140/tls13` 增加 `MasterSecret.WithKEMSecret`；
+- KEM 证书模式在拿到 `ssServer`/`ssClient` 后，把
+  `HKDF-Extract(salt=master, IKM=ssServer||ssClient)` 作为新的 master；
+- 应用流量密钥、exporter、resumption secret 改为从新 master 派生；
+- 服务端在 type 252 发送之后才安装应用写密钥；客户端收到 252 后才安装应用读密钥；
+- `kemFinishedHash` 保留，Finished 仍绑定两段 KEM 秘密。
+
+应用顺序：
+
+```bash
+patch -p1 < slhdsa-tls-handshake.patch
+patch -p1 < kem-registry-tls.patch
+patch -p1 < protocol-mode-negotiation.patch
+patch -p1 < kem-key-schedule.patch
+```
+
+边界：握手流量密钥仍来自 ECDHE；未实现纯 KEM、0.5-RTT 数据和 KEM 证书链 PQ 验签。
+详见 `docs/KEM密钥调度-20261120.md`。
