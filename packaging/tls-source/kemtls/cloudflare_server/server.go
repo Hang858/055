@@ -105,6 +105,22 @@ func loadPQRoots() ([]*x509.Certificate, error) {
 	return []*x509.Certificate{cert}, nil
 }
 
+// authModesFromEnv 读取双维度认证配置：KEMTLS_CLIENT_AUTH / KEMTLS_SERVER_AUTH。
+func authModesFromEnv() (uint16, uint16) {
+	parse := func(key string) uint16 {
+		v := os.Getenv(key)
+		if v == "" {
+			return 0
+		}
+		n, err := strconv.ParseUint(v, 0, 16)
+		if err != nil {
+			return 0
+		}
+		return uint16(n)
+	}
+	return parse("KEMTLS_CLIENT_AUTH"), parse("KEMTLS_SERVER_AUTH")
+}
+
 func main() {
 	cert, err := loadServerCertificate()
 	if err != nil {
@@ -117,6 +133,7 @@ func main() {
 	}
 
 	protocolType, protocolTypes, modeCompat := protocolConfigFromEnv(tls.QuantumSupportAKEX)
+	clientAuthMode, serverAuthMode := authModesFromEnv()
 	requirePQChain := os.Getenv("KEMTLS_PQ_CHAIN") == "1"
 	var pqRoots []*x509.Certificate
 	if requirePQChain {
@@ -141,6 +158,8 @@ func main() {
 		ProtocolTypeStrict:        0, // 👈 旧接口，保留兼容；新配置用 ModeCompatibilityFlag
 		PQRoots:                   pqRoots,
 		RequirePQCertificateChain: requirePQChain,
+		ClientAuthMode:            clientAuthMode,
+		ServerAuthMode:            serverAuthMode,
 		KEMTLSSigAlg:              os.Getenv("KEMTLS_SIG_ALG"),
 		KEMTLSSigKey:              os.Getenv("KEMTLS_SIG_KEY"),
 		KEMTLSKEMAlg:              os.Getenv("KEMTLS_KEM_ALG"),

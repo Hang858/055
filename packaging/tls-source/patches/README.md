@@ -135,3 +135,30 @@ patch -p1 < pq-certificate-chain.patch
 ```
 
 测试与边界见 `docs/证书链PQ验签-20261120.md`。
+
+## heterogeneous-auth.patch
+
+对应 2026-11-20 的双维度认证与异构握手：
+
+- 新增 `0xFFF4` auth_modes 扩展，ClientHello 携带 client_auth/server_auth，
+  ServerHello 回显；
+- `Config` 增加 `ClientAuthMode`/`ServerAuthMode`，0 表示按 ProtocolType 推导；
+- 服务端按服务端认证过滤候选类型，并检查自身能否接受客户端认证；
+- KEM 方向按侧拆分：`server_auth=KEM` 时客户端向服务端证书封装，
+  `client_auth=KEM` 时服务端向客户端证书封装并发 type 252；
+- `kemFinishedHash`、应用密钥派生支持只有一段 KEM 秘密的异构模式；
+- 支持 Sig-Sig、KEM-KEM、Sig-KEM、KEM-Sig 四种组合。
+
+应用顺序：
+
+```bash
+patch -p1 < slhdsa-tls-handshake.patch
+patch -p1 < kem-registry-tls.patch
+patch -p1 < protocol-mode-negotiation.patch
+patch -p1 < kem-key-schedule.patch
+patch -p1 < pq-certificate-chain.patch
+patch -p1 < heterogeneous-auth.patch
+```
+
+边界：仍是单阶段密钥调度，未实现 FA-TLS 的 AHS 和独立 KEMEncapsulation 消息。
+详见 `docs/双向异构认证-20261120.md`。

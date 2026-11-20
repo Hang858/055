@@ -1,0 +1,547 @@
+diff -ruN .build/backup-before-heterogeneous/tls/auth_modes_test.go .build/extracted/go_kemtls/src/crypto/tls/auth_modes_test.go
+--- a/src/crypto/tls/auth_modes_test.go	1970-01-01 08:00:00.000000000 +0800
++++ b/src/crypto/tls/auth_modes_test.go	2026-11-20 16:50:04.791631978 +0800
+@@ -0,0 +1,60 @@
++package tls
++
++import "testing"
++
++func TestAuthModes(t *testing.T) {
++	tests := []struct {
++		name        string
++		c           *Config
++		wantClient  uint16
++		wantServer  uint16
++		wantPresent bool
++	}{
++		{
++			name:       "legacy derives from ProtocolType",
++			c:          &Config{ProtocolType: 21},
++			wantClient: AuthKEM,
++			wantServer: AuthKEM,
++		},
++		{
++			name:        "explicit heterogeneous pair",
++			c:           &Config{ProtocolType: 21, ClientAuthMode: AuthSig, ServerAuthMode: AuthKEM},
++			wantClient:  AuthSig,
++			wantServer:  AuthKEM,
++			wantPresent: true,
++		},
++		{
++			name:        "reachable KEM-Sig pair",
++			c:           &Config{ProtocolType: 11, ClientAuthMode: AuthKEM, ServerAuthMode: AuthSig},
++			wantClient:  AuthKEM,
++			wantServer:  AuthSig,
++			wantPresent: true,
++		},
++		{
++			name:        "only server auth set",
++			c:           &Config{ProtocolType: 21, ServerAuthMode: AuthKEM},
++			wantClient:  AuthKEM,
++			wantServer:  AuthKEM,
++			wantPresent: true,
++		},
++	}
++	for _, tc := range tests {
++		client, server, present := tc.c.authModes()
++		if client != tc.wantClient || server != tc.wantServer || present != tc.wantPresent {
++			t.Errorf("%s: got (%d,%d,%v), want (%d,%d,%v)", tc.name, client, server, present, tc.wantClient, tc.wantServer, tc.wantPresent)
++		}
++	}
++}
++
++func TestAuthModeValid(t *testing.T) {
++	for _, a := range []uint16{AuthClassic, AuthSig, AuthKEM} {
++		if !authModeValid(a) {
++			t.Errorf("authModeValid(%d) = false", a)
++		}
++	}
++	for _, a := range []uint16{1, 5, 19, 21, 30, 99} {
++		if authModeValid(a) {
++			t.Errorf("authModeValid(%d) = true", a)
++		}
++	}
++}
+diff -ruN .build/backup-before-heterogeneous/tls/common.go .build/extracted/go_kemtls/src/crypto/tls/common.go
+--- a/src/crypto/tls/common.go	2026-11-20 10:42:37.631943105 +0800
++++ b/src/crypto/tls/common.go	2026-11-20 16:45:40.988816089 +0800
+@@ -37,6 +37,7 @@
+ const extensionPQCiphertext = 0xFE03       // 服务器抗量子密文扩展
+ const extensionProtocolTypeStrict = 0xFFF2 // 自定义编号，私有使用范围内，用来表示这个类型是不是强制的
+ const extensionProtocolTypeList = 0xFFF3   // 客户端支持的交互类型列表，首项为首选
++const extensionAuthModes = 0xFFF4          // 双维度认证模式：client_auth + server_auth
+ 
+ const (
+ 	// 👈 定义一个纯经典的回退版本
+@@ -63,10 +64,20 @@
+ 	QuantumSupportKemCert_HRR          = 22
+ 	QuantumSupportKemCert_ServerKeyGen = 23
+ 
++	// 双维度认证模式取值（论文第 4 章的 auth 编号）。
++	AuthClassic = 0
++	AuthSig     = QuantumSupportSignCert
++	AuthKEM     = QuantumSupportKemCert
++
+ 	// 👈 这里设置一个自动的选项，server端会根据Client端发过来的协议类型，从而自动选择协议类型
+ 	Auto = 99
+ )
+ 
++// authModeValid 判断认证模式是否是已定义取值。
++func authModeValid(a uint16) bool {
++	return a == AuthClassic || a == AuthSig || a == AuthKEM
++}
++
+ // protocolTypeAuth 返回组合编号中的认证部分（0/10/20）。
+ func protocolTypeAuth(t uint16) uint16 { return (t / 10) * 10 }
+ 
+@@ -1058,6 +1069,13 @@
+ 	// []uint16{ProtocolType}。列表里可以包含 ClassicAKE(0) 作为回退项。
+ 	ProtocolTypes []uint16
+ 
++	// ClientAuthMode/ServerAuthMode 是客户端期望的双维度认证：
++	// ClientAuthMode 表示自己（客户端）使用的认证，ServerAuthMode 表示
++	// 期望服务端使用的认证。0 表示按 ProtocolType 的认证位推导。
++	// 服务端不读取这两个字段，而是按 ClientHello 中通告的值协商。
++	ClientAuthMode uint16
++	ServerAuthMode uint16
++
+ 	// ModeCompatibilityFlag 对应论文的 modeCompatibilityFlag：
+ 	// true 表示愿意跟随对端已通告的类型；false 表示只接受本端首选类型，
+ 	// 不匹配时回退到 ClassicAKE(0)。只有设置了 ProtocolTypes 时才生效，
+@@ -1106,6 +1124,21 @@
+ 	return c.protocolTypeList()[0]
+ }
+ 
++// authModes 返回客户端期望的双维度认证。未显式设置时退化为
++// (ProtocolType 的认证位, 同一认证位)，保持旧行为。
++func (c *Config) authModes() (clientAuth, serverAuth uint16, present bool) {
++	serverAuth = c.ServerAuthMode
++	if serverAuth == 0 {
++		serverAuth = protocolTypeAuth(c.protocolTypePrimary())
++	}
++	clientAuth = c.ClientAuthMode
++	if clientAuth == 0 {
++		clientAuth = serverAuth
++	}
++	present = c.ClientAuthMode != 0 || c.ServerAuthMode != 0
++	return clientAuth, serverAuth, present
++}
++
+ // protocolTypeStrict 返回本端是否强制首选类型。设置 ProtocolTypes 时按论文
+ // 语义由 ModeCompatibilityFlag 取反；未设置时沿用旧的 ProtocolTypeStrict。
+ func (c *Config) protocolTypeStrict() bool {
+@@ -1200,6 +1233,8 @@
+ 		RootCAs:                             c.RootCAs,
+ 		PQRoots:                             slices.Clone(c.PQRoots),
+ 		RequirePQCertificateChain:           c.RequirePQCertificateChain,
++		ClientAuthMode:                      c.ClientAuthMode,
++		ServerAuthMode:                      c.ServerAuthMode,
+ 		NextProtos:                          c.NextProtos,
+ 		ServerName:                          c.ServerName,
+ 		ClientAuth:                          c.ClientAuth,
+diff -ruN .build/backup-before-heterogeneous/tls/handshake_client.go .build/extracted/go_kemtls/src/crypto/tls/handshake_client.go
+--- a/src/crypto/tls/handshake_client.go	2026-11-20 10:42:49.478883136 +0800
++++ b/src/crypto/tls/handshake_client.go	2026-11-20 16:45:49.025375514 +0800
+@@ -95,9 +95,31 @@
+ 	}
+ 
+ 	//👈 这里选择要进行的密钥交换类型：首项为首选，列表用于协商
+-	hello.ProtocolType = c.config.protocolTypePrimary()
+-	hello.ProtocolTypes = c.config.protocolTypeList()
++	clientAuth, serverAuth, hasAuthModes := c.config.authModes()
++	if !authModeValid(clientAuth) || !authModeValid(serverAuth) {
++		return nil, nil, nil, fmt.Errorf("tls: invalid auth mode client=%d server=%d", clientAuth, serverAuth)
++	}
++	protocolTypes := c.config.protocolTypeList()
++	if hasAuthModes && serverAuth != AuthClassic {
++		filtered := protocolTypes[:0]
++		for _, t := range protocolTypes {
++			if t == ClassicAKE || protocolTypeAuth(t) == serverAuth {
++				filtered = append(filtered, t)
++			}
++		}
++		if len(filtered) == 0 {
++			return nil, nil, nil, fmt.Errorf("tls: no protocol type with server auth mode %d", serverAuth)
++		}
++		protocolTypes = filtered
++	}
++	hello.ProtocolType = protocolTypes[0]
++	hello.ProtocolTypes = protocolTypes
+ 	hello.ProtocolTypeStrict = c.config.protocolTypeWireStrict()
++	if hasAuthModes {
++		hello.ClientAuthMode = clientAuth
++		hello.ServerAuthMode = serverAuth
++		hello.HasAuthModes = true
++	}
+ 	//hello.ProtocolType = uint16(QuantumSupportAKEX)
+ 
+ 	//👈 这里给clienthello中的PQ公钥字段赋值（仅混合密钥交换需要）
+diff -ruN .build/backup-before-heterogeneous/tls/handshake_client_tls13.go .build/extracted/go_kemtls/src/crypto/tls/handshake_client_tls13.go
+--- a/src/crypto/tls/handshake_client_tls13.go	2026-11-20 10:37:13.865754124 +0800
++++ b/src/crypto/tls/handshake_client_tls13.go	2026-11-20 16:48:26.334129195 +0800
+@@ -51,6 +51,8 @@
+ 	//👈 这里记录了协议交互的具体类型
+ 	protocoltype       uint16
+ 	protocoltypestrict uint16
++	clientauth         uint16         // 👈 客户端自己的认证模式
++	serverauth         uint16         // 👈 服务端认证模式
+ 	pqPublicKey        kem.PublicKey  //👈 记录拓展的密钥
+ 	pqPrivKey          kem.PrivateKey //👈 记录拓展的密钥
+ 	pqSharedSecret     []byte
+@@ -82,6 +84,35 @@
+ 		return fmt.Errorf("tls: strict client rejected protocol type %d", selected)
+ 	}
+ 	hs.protocoltype = selected
++	hs.serverauth = protocolTypeAuth(selected)
++	hs.clientauth = hs.serverauth
++	if hs.serverHello.HasAuthModes {
++		if hs.serverauth == AuthClassic {
++			if hs.serverHello.ServerAuthMode != AuthClassic || hs.serverHello.ClientAuthMode != AuthClassic {
++				c.sendAlert(alertIllegalParameter)
++				return fmt.Errorf("tls: invalid classic auth modes (%d,%d)", hs.serverHello.ClientAuthMode, hs.serverHello.ServerAuthMode)
++			}
++			hs.clientauth = AuthClassic
++		} else {
++			if hs.serverHello.ServerAuthMode != hs.serverauth {
++				c.sendAlert(alertIllegalParameter)
++				return fmt.Errorf("tls: server auth mode %d does not match selected type", hs.serverHello.ServerAuthMode)
++			}
++			if !authModeValid(hs.serverHello.ClientAuthMode) {
++				c.sendAlert(alertIllegalParameter)
++				return fmt.Errorf("tls: invalid negotiated client auth mode %d", hs.serverHello.ClientAuthMode)
++			}
++			if hs.hello.HasAuthModes && hs.serverHello.ClientAuthMode != hs.hello.ClientAuthMode {
++				c.sendAlert(alertIllegalParameter)
++				return fmt.Errorf("tls: server changed client auth mode from %d to %d", hs.hello.ClientAuthMode, hs.serverHello.ClientAuthMode)
++			}
++			hs.clientauth = hs.serverHello.ClientAuthMode
++		}
++	} else if hs.hello.HasAuthModes && hs.serverauth != AuthClassic && hs.hello.ClientAuthMode != hs.serverauth {
++		// 旧服务端不识别双维度扩展，不能完成异构认证。
++		c.sendAlert(alertIllegalParameter)
++		return errors.New("tls: server does not support negotiated auth modes")
++	}
+ 
+ 	// The server must not select TLS 1.3 in a renegotiation. See RFC 8446,
+ 	// sections 4.1.2 and 4.1.3.
+@@ -774,7 +805,7 @@
+ 		return err
+ 	}
+ 
+-	if (hs.serverHello.ProtocolType/10)*10 == QuantumSupportKemCert {
++	if hs.serverauth == AuthKEM {
+ 		certs := make([]*x509.Certificate, len(certMsg.certificate.Certificate))
+ 		for i, asn1Data := range certMsg.certificate.Certificate {
+ 			cert, err := globalCertCache.newCert(asn1Data)
+@@ -923,9 +954,9 @@
+ 
+ 	// Derive secrets that take context through the server Finished.
+ 
+-	// KEM 证书模式要等 type 252 收到、两段 KEM 共享秘密都到手后，才能派生
+-	// 应用流量密钥；见 deriveKEMApplicationSecrets。
+-	if protocolTypeAuth(hs.protocoltype) == QuantumSupportKemCert {
++	// KEM 认证模式要等客户端证书/KEM 密文处理完，才能派生应用流量密钥；
++	// 见 deriveKEMApplicationSecrets。
++	if hs.serverauth == AuthKEM || hs.clientauth == AuthKEM {
+ 		return nil
+ 	}
+ 
+@@ -954,7 +985,7 @@
+ // 所以这里只安装 c.in；c.out 在 sendClientFinished 末尾安装。
+ func (hs *clientHandshakeStateTLS13) deriveKEMApplicationSecrets() error {
+ 	c := hs.c
+-	if len(hs.persistentssKEM) == 0 || len(hs.persistentssKEM_Client) == 0 {
++	if len(hs.persistentssKEM) == 0 && len(hs.persistentssKEM_Client) == 0 {
+ 		c.sendAlert(alertInternalError)
+ 		return errors.New("tls: missing KEM secrets for application key derivation")
+ 	}
+@@ -1006,7 +1037,9 @@
+ 	certMsg.scts = hs.certReq.scts && len(cert.SignedCertificateTimestamps) > 0
+ 	certMsg.ocspStapling = hs.certReq.ocspStapling && len(cert.OCSPStaple) > 0
+ 
+-	certMsg.persistentCiphertextKEM = hs.persistentCiphertextKEM
++	if hs.serverauth == AuthKEM {
++		certMsg.persistentCiphertextKEM = hs.persistentCiphertextKEM
++	}
+ 
+ 	if _, err := hs.c.writeHandshakeRecord(certMsg, hs.transcript); err != nil {
+ 		return err
+@@ -1020,7 +1053,7 @@
+ 	certVerifyMsg := new(certificateVerifyMsg)
+ 	certVerifyMsg.hasSignatureAlgorithm = true
+ 
+-	if c.config.KEMTLSSigAlg != "" {
++	if hs.clientauth == AuthSig && c.config.KEMTLSSigAlg != "" {
+ 		scheme, ok := PQSchemeByName(c.config.KEMTLSSigAlg)
+ 		if !ok {
+ 			c.sendAlert(alertInternalError)
+@@ -1066,8 +1099,8 @@
+ 		return err
+ 	}
+ 
+-	// 👈 这里拓展读取Server端密文的过程，等待server端发送回来密文
+-	if (hs.protocoltype/10)*10 == QuantumSupportKemCert {
++	// 👈 客户端认证为 KEM 时，等待服务端封装到客户端证书的密文。
++	if hs.clientauth == AuthKEM {
+ 		// 刷新网络缓冲区，确保ServerHello立即发送
+ 		if _, err1 := c.flush(); err1 != nil {
+ 			log.Printf("Server: Failed to flush network buffer: %v", err1)
+@@ -1115,7 +1148,7 @@
+ 
+ 	}
+ 
+-	if protocolTypeAuth(hs.protocoltype) == QuantumSupportKemCert {
++	if hs.serverauth == AuthKEM || hs.clientauth == AuthKEM {
+ 		if err := hs.deriveKEMApplicationSecrets(); err != nil {
+ 			return err
+ 		}
+@@ -1128,8 +1161,8 @@
+ 	c := hs.c
+ 
+ 	verifyData := hs.suite.finishedHash(c.out.trafficSecret, hs.transcript)
+-	if (hs.protocoltype/10)*10 == QuantumSupportKemCert {
+-		if len(hs.persistentssKEM) == 0 || len(hs.persistentssKEM_Client) == 0 {
++	if hs.serverauth == AuthKEM || hs.clientauth == AuthKEM {
++		if len(hs.persistentssKEM) == 0 && len(hs.persistentssKEM_Client) == 0 {
+ 			c.sendAlert(alertInternalError)
+ 			return errors.New("tls: missing KEM secrets for client Finished")
+ 		}
+@@ -1144,7 +1177,7 @@
+ 		return err
+ 	}
+ 
+-	if protocolTypeAuth(hs.protocoltype) == QuantumSupportKemCert && len(hs.trafficSecret) == 0 {
++	if (hs.serverauth == AuthKEM || hs.clientauth == AuthKEM) && len(hs.trafficSecret) == 0 {
+ 		c.sendAlert(alertInternalError)
+ 		return errors.New("tls: missing KEM application secret")
+ 	}
+diff -ruN .build/backup-before-heterogeneous/tls/handshake_messages.go .build/extracted/go_kemtls/src/crypto/tls/handshake_messages.go
+--- a/src/crypto/tls/handshake_messages.go	2026-11-20 10:28:57.274371063 +0800
++++ b/src/crypto/tls/handshake_messages.go	2026-11-20 16:47:01.190788813 +0800
+@@ -112,6 +112,9 @@
+ 	ProtocolType       uint16
+ 	ProtocolTypeStrict uint16   // 👈来定义协议类型是否是强制的
+ 	ProtocolTypes      []uint16 // 👈 本端支持的类型列表，首项为首选
++	ClientAuthMode     uint16   // 👈 客户端自己的认证模式
++	ServerAuthMode     uint16   // 👈 客户端期望服务端的认证模式
++	HasAuthModes       bool     // 👈 是否发送了双维度认证扩展
+ 	pqPublicKey        []byte   // 抗量子公钥
+ }
+ 
+@@ -385,6 +388,14 @@
+ 		})
+ 	}
+ 
++	if m.HasAuthModes {
++		exts.AddUint16(extensionAuthModes)
++		exts.AddUint16LengthPrefixed(func(exts *cryptobyte.Builder) {
++			exts.AddUint16(m.ClientAuthMode)
++			exts.AddUint16(m.ServerAuthMode)
++		})
++	}
++
+ 	extBytes, err := exts.Bytes()
+ 	if err != nil {
+ 		return nil, err
+@@ -540,6 +551,12 @@
+ 				}
+ 				m.ProtocolTypes = append(m.ProtocolTypes, t)
+ 			}
++		case extensionAuthModes:
++			if !extData.ReadUint16(&m.ClientAuthMode) ||
++				!extData.ReadUint16(&m.ServerAuthMode) || !extData.Empty() {
++				return false
++			}
++			m.HasAuthModes = true
+ 			//👈 添加抗量子公钥扩展处理
+ 		case extensionPQPublicKey:
+ 			m.pqPublicKey = make([]byte, len(extData))
+@@ -904,6 +921,9 @@
+ 	// 👈 新增字段：标识密钥交换协议类型和密文
+ 	ProtocolType       uint16
+ 	ProtocolTypeStrict uint16
++	ClientAuthMode     uint16
++	ServerAuthMode     uint16
++	HasAuthModes       bool
+ 	pqPublicKey        []byte // 抗量子公钥，仅在专利实现中使用
+ 	pqCiphertext       []byte
+ }
+@@ -1039,6 +1059,14 @@
+ 		})
+ 	}
+ 
++	if m.HasAuthModes {
++		exts.AddUint16(extensionAuthModes)
++		exts.AddUint16LengthPrefixed(func(exts *cryptobyte.Builder) {
++			exts.AddUint16(m.ClientAuthMode)
++			exts.AddUint16(m.ServerAuthMode)
++		})
++	}
++
+ 	extBytes, err := exts.Bytes()
+ 	if err != nil {
+ 		return nil, err
+@@ -1111,6 +1139,12 @@
+ 			if !extData.ReadUint16(&m.ProtocolTypeStrict) {
+ 				return false
+ 			}
++		case extensionAuthModes:
++			if !extData.ReadUint16(&m.ClientAuthMode) ||
++				!extData.ReadUint16(&m.ServerAuthMode) || !extData.Empty() {
++				return false
++			}
++			m.HasAuthModes = true
+ 			//👈 添加抗量子密文反序列化处理
+ 		case extensionPQCiphertext:
+ 			m.pqCiphertext = make([]byte, len(extData))
+diff -ruN .build/backup-before-heterogeneous/tls/handshake_server_tls13.go .build/extracted/go_kemtls/src/crypto/tls/handshake_server_tls13.go
+--- a/src/crypto/tls/handshake_server_tls13.go	2026-11-20 10:42:41.224196592 +0800
++++ b/src/crypto/tls/handshake_server_tls13.go	2026-11-20 16:46:21.458249469 +0800
+@@ -74,6 +74,8 @@
+ 	//👈 这里记录了协议交互的具体类型
+ 	protocoltype            uint16
+ 	protocoltypestrict      uint16
++	clientauth              uint16        // 👈 客户端认证模式
++	serverauth              uint16        // 👈 服务端认证模式
+ 	pqPublicKey             kem.PublicKey //👈 记录拓展的公钥
+ 	pqSharedSecret          []byte
+ 	pqPrivKey               kem.PrivateKey //👈 记录拓展的私钥
+@@ -115,9 +117,11 @@
+ 		return err
+ 	}
+ 	// 👈 这里拓展一个专利中才能用到的过程就是client端收到并发送密文
+-	if protocolTypeAuth(hs.protocoltype) == QuantumSupportKemCert {
+-		if err := hs.sendServerCiphertext(); err != nil {
+-			return err
++	if hs.serverauth == AuthKEM || hs.clientauth == AuthKEM {
++		if hs.clientauth == AuthKEM {
++			if err := hs.sendServerCiphertext(); err != nil {
++				return err
++			}
+ 		}
+ 		if err := hs.deriveKEMApplicationSecrets(); err != nil {
+ 			return err
+@@ -197,6 +201,12 @@
+ 		if serverStrict && t != hs.protocoltype && t != ClassicAKE {
+ 			continue
+ 		}
++		// 双维度协商：客户端期望的服务端认证必须与候选类型的认证位一致。
++		if hs.clientHello.HasAuthModes && t != ClassicAKE &&
++			hs.clientHello.ServerAuthMode != AuthClassic &&
++			protocolTypeAuth(t) != hs.clientHello.ServerAuthMode {
++			continue
++		}
+ 		if !hs.canRunProtocolType(t) {
+ 			continue
+ 		}
+@@ -210,12 +220,49 @@
+ 	}
+ 
+ 	hs.protocoltype = chosen
++	hs.serverauth = protocolTypeAuth(chosen)
++	hs.clientauth = hs.serverauth
++	if hs.clientHello.HasAuthModes {
++		if chosen == ClassicAKE {
++			hs.clientauth = AuthClassic
++			hs.serverauth = AuthClassic
++		} else {
++			if hs.clientHello.ServerAuthMode != hs.serverauth {
++				hs.c.sendAlert(alertIllegalParameter)
++				return fmt.Errorf("tls: client expected server auth %d but selected type is %d", hs.clientHello.ServerAuthMode, hs.serverauth)
++			}
++			if !authModeValid(hs.clientHello.ClientAuthMode) {
++				hs.c.sendAlert(alertIllegalParameter)
++				return fmt.Errorf("tls: invalid client auth mode %d", hs.clientHello.ClientAuthMode)
++			}
++			if !hs.canRunClientAuth(hs.clientHello.ClientAuthMode) {
++				hs.c.sendAlert(alertHandshakeFailure)
++				return fmt.Errorf("tls: cannot run client auth mode %d", hs.clientHello.ClientAuthMode)
++			}
++			hs.clientauth = hs.clientHello.ClientAuthMode
++		}
++		hs.hello.ClientAuthMode = hs.clientauth
++		hs.hello.ServerAuthMode = hs.serverauth
++		hs.hello.HasAuthModes = true
++	}
+ 	hs.hello.ProtocolType = chosen
+ 	hs.hello.ProtocolTypeStrict = hs.protocoltypestrict
+-	log.Printf("协议类型协商: client=%v strict=%d -> selected=%d", offered, hs.clientHello.ProtocolTypeStrict, chosen)
++	log.Printf("协议类型协商: client=%v strict=%d auth=(%d,%d) -> selected=%d", offered, hs.clientHello.ProtocolTypeStrict, hs.clientauth, hs.serverauth, chosen)
+ 	return nil
+ }
+ 
++// canRunClientAuth 检查服务端能否接受客户端声明的认证模式。
++func (hs *serverHandshakeStateTLS13) canRunClientAuth(a uint16) bool {
++	switch a {
++	case AuthClassic:
++		return true
++	case AuthSig, AuthKEM:
++		return hs.c.config.ClientAuth >= RequestClientCert
++	default:
++		return false
++	}
++}
++
+ // canRunProtocolType 检查服务端是否具备运行某组合的配置能力。
+ func (hs *serverHandshakeStateTLS13) canRunProtocolType(t uint16) bool {
+ 	if t == ClassicAKE {
+@@ -1277,7 +1324,7 @@
+ 	// KEM 证书模式的应用流量密钥要等客户端证书处理完、两段 KEM 共享秘密
+ 	// 都到手后再派生（见 deriveKEMApplicationSecrets）。握手流量密钥不变，
+ 	// 因为服务端 Finished 必须先于客户端 KEM 贡献发送。
+-	if protocolTypeAuth(hs.protocoltype) == QuantumSupportKemCert {
++	if hs.serverauth == AuthKEM || hs.clientauth == AuthKEM {
+ 		return nil
+ 	}
+ 
+@@ -1323,7 +1370,7 @@
+ // 握手密钥加密，客户端此时还没有安装应用密钥。
+ func (hs *serverHandshakeStateTLS13) deriveKEMApplicationSecrets() error {
+ 	c := hs.c
+-	if len(hs.persistentssKEM) == 0 || len(hs.persistentssKEM_Client) == 0 {
++	if len(hs.persistentssKEM) == 0 && len(hs.persistentssKEM_Client) == 0 {
+ 		c.sendAlert(alertInternalError)
+ 		return errors.New("tls: missing KEM secrets for application key derivation")
+ 	}
+@@ -1368,8 +1415,8 @@
+ func (hs *serverHandshakeStateTLS13) sendSessionTickets() error {
+ 	c := hs.c
+ 
+-	if (hs.protocoltype/10)*10 == QuantumSupportKemCert {
+-		if len(hs.persistentssKEM) == 0 || len(hs.persistentssKEM_Client) == 0 {
++	if hs.serverauth == AuthKEM || hs.clientauth == AuthKEM {
++		if len(hs.persistentssKEM) == 0 && len(hs.persistentssKEM_Client) == 0 {
+ 			c.sendAlert(alertInternalError)
+ 			return errors.New("tls: missing KEM secrets for client Finished")
+ 		}
+@@ -1555,8 +1602,8 @@
+ 			return err
+ 		}
+ 
+-		// 👈 这里读取client端加密的密文
+-		if (hs.protocoltype/10)*10 == QuantumSupportKemCert {
++		// 👈 服务端认证为 KEM 时，读取客户端封装到服务端 KEM 证书的密文。
++		if hs.serverauth == AuthKEM {
+ 			kemKey := c.config.KEMTLSKEMKey
+ 			if kemKey == "" {
+ 				kemKey = "pqcerts/end-entity-pq-key-KEM.bin"
+@@ -1569,8 +1616,8 @@
+ 			}
+ 			hs.persistentssKEM = ss
+ 		}
+-		// 👈 协商结果为 KEM 证书认证时，服务端向客户端证书封装密文（type 252）。
+-		if protocolTypeAuth(hs.protocoltype) == QuantumSupportKemCert {
++		// 👈 客户端认证为 KEM 时，服务端向客户端证书封装，稍后通过 type 252 发送。
++		if hs.clientauth == AuthKEM {
+ 			certs := make([]*x509.Certificate, len(certMsg.certificate.Certificate))
+ 			for i, asn1Data := range certMsg.certificate.Certificate {
+ 				cert, err := globalCertCache.newCert(asn1Data)
+@@ -1601,7 +1648,7 @@
+ 
+ 	// If we waited until the client certificates to send session tickets, we
+ 	// are ready to do it now.
+-	if (hs.protocoltype/10)*10 != QuantumSupportKemCert {
++	if hs.serverauth != AuthKEM && hs.clientauth != AuthKEM {
+ 		if err := hs.sendSessionTickets(); err != nil {
+ 			return err
+ 		}
