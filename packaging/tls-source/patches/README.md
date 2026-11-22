@@ -215,3 +215,23 @@ patch -p1 < kem-encapsulation-message.patch
 
 与阶段 4/5a 的旧 wire format 不兼容。详见
 `docs/KEMEncapsulation消息-20261120.md`。
+
+## mlkem-adaptation.patch
+
+对应 2026-11-22 的 ML-KEM 适配：
+
+- `crypto/pq` 增加 Go 标准库 ML-KEM-768/1024 后端；
+- `pqc` 模块同步注册 ML-KEM，`Lookup/All/ByOID` 同时覆盖 C 算法和 Go 后端；
+- `crypto/tls` 增加 `Config.KEMTLSKEXAlg`，新增 `pq_kex.go` 统一 Kyber/ML-KEM
+  的 keygen/encaps/decaps；
+- 混合 KEX 和 ServerKeyGen 不再硬编码 CIRCL Kyber768；
+- KEM 证书通过 `.1.4` OID 选择 ML-KEM。
+
+应用顺序：在 `kem-encapsulation-message.patch` 之后追加：
+
+```bash
+patch -p1 < mlkem-adaptation.patch
+```
+
+`pqc` 模块的 Go 后端随源码提交；GOROOT 侧的 `crypto/pq` 修改在补丁里。
+详见 `docs/ML-KEM适配与矩阵-20261122.md`。

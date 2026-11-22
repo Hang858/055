@@ -1,0 +1,781 @@
+diff -ruN .build/patch-seq7/src/crypto/tls/common.go .build/extracted/go_kemtls/src/crypto/tls/common.go
+--- a/src/crypto/tls/common.go	2026-11-20 17:08:08.942168049 +0800
++++ b/src/crypto/tls/common.go	2026-11-22 12:10:33.282252362 +0800
+@@ -1092,6 +1092,10 @@
+ 	// used by the KEM-certificate path. Empty values keep Kyber768 behavior.
+ 	KEMTLSKEMAlg string
+ 	KEMTLSKEMKey string
++
++	// KEMTLSKEXAlg selects the algorithm used for the hybrid key share and
++	// ServerKeyGen path. Empty means the legacy Kyber768.
++	KEMTLSKEXAlg string
+ }
+ 
+ // protocolTypeList 返回去重后的本端支持列表，首项为首选。
+@@ -1235,6 +1239,7 @@
+ 		RequirePQCertificateChain:           c.RequirePQCertificateChain,
+ 		ClientAuthMode:                      c.ClientAuthMode,
+ 		ServerAuthMode:                      c.ServerAuthMode,
++		KEMTLSKEXAlg:                        c.KEMTLSKEXAlg,
+ 		NextProtos:                          c.NextProtos,
+ 		ServerName:                          c.ServerName,
+ 		ClientAuth:                          c.ClientAuth,
+diff -ruN .build/patch-seq7/src/crypto/tls/handshake_client.go .build/extracted/go_kemtls/src/crypto/tls/handshake_client.go
+--- a/src/crypto/tls/handshake_client.go	2026-11-20 17:08:08.942491289 +0800
++++ b/src/crypto/tls/handshake_client.go	2026-11-22 12:11:13.289598264 +0800
+@@ -20,10 +20,7 @@
+ 	"crypto/x509"
+ 	"errors"
+ 	// 👈 这里是迁移模式新增的
+-	"crypto/rand"
+ 	"fmt"
+-	"github.com/cloudflare/circl/kem"
+-	"github.com/cloudflare/circl/kem/kyber/kyber768"
+ 	"hash"
+ 	"internal/godebug"
+ 	"io"
+@@ -42,14 +39,14 @@
+ 	suite        *cipherSuite
+ 	finishedHash finishedHash
+ 	masterSecret []byte
+-	session      *SessionState  // the session being resumed
+-	ticket       []byte         // a fresh ticket received during this handshake
+-	pqPublicKey  kem.PublicKey  //👈 记录拓展的密钥
+-	pqPrivKey    kem.PrivateKey //👈 记录拓展的密钥
++	session      *SessionState // the session being resumed
++	ticket       []byte        // a fresh ticket received during this handshake
++	pqPublicKey  any           //👈 记录拓展的密钥
++	pqPrivKey    any           //👈 记录拓展的私钥
+ }
+ 
+-var pqPublicKey_global kem.PublicKey
+-var pqPrivKey_global kem.PrivateKey
++var pqPublicKey_global any
++var pqPrivKey_global any
+ 
+ func (c *Conn) makeClientHello() (*clientHelloMsg, *keySharePrivateKeys, *echClientContext, error) {
+ 	config := c.config
+@@ -124,12 +121,11 @@
+ 
+ 	//👈 这里给clienthello中的PQ公钥字段赋值（仅混合密钥交换需要）
+ 	if hello.ProtocolType%10 == QuantumSupportKEX {
+-		pqPublicKey, pqPrivKey, _ := kyber768.GenerateKeyPair(rand.Reader)
+-		// 将公钥序列化为字节
+-		pubKeyBytes, _ := pqPublicKey.MarshalBinary()
+-		//PrivKeyBytes, _ := pqPrivKey.MarshalBinary()
++		pubKeyBytes, pqPrivKey, err := pqKEXGenerate(pqKEXAlgName(c.config.KEMTLSKEXAlg))
++		if err != nil {
++			return nil, nil, nil, err
++		}
+ 		pqPrivKey_global = pqPrivKey
+-		pqPublicKey_global = pqPublicKey
+ 		hello.pqPublicKey = pubKeyBytes
+ 	}
+ 
+diff -ruN .build/patch-seq7/src/crypto/tls/handshake_client_tls13.go .build/extracted/go_kemtls/src/crypto/tls/handshake_client_tls13.go
+--- a/src/crypto/tls/handshake_client_tls13.go	2026-11-20 17:08:08.946628653 +0800
++++ b/src/crypto/tls/handshake_client_tls13.go	2026-11-22 12:11:22.561270949 +0800
+@@ -14,14 +14,11 @@
+ 	"crypto/internal/fips140/tls13"
+ 	"crypto/myx509"
+ 	// 👈 这里是迁移模式新增的
+-	"crypto/rand"
+ 	"crypto/rsa"
+ 	"crypto/subtle"
+ 	"crypto/x509"
+ 	"errors"
+ 	"fmt"
+-	"github.com/cloudflare/circl/kem"
+-	"github.com/cloudflare/circl/kem/kyber/kyber768"
+ 	"hash"
+ 	"log"
+ 	"slices"
+@@ -53,10 +50,10 @@
+ 	//👈 这里记录了协议交互的具体类型
+ 	protocoltype       uint16
+ 	protocoltypestrict uint16
+-	clientauth         uint16         // 👈 客户端自己的认证模式
+-	serverauth         uint16         // 👈 服务端认证模式
+-	pqPublicKey        kem.PublicKey  //👈 记录拓展的密钥
+-	pqPrivKey          kem.PrivateKey //👈 记录拓展的密钥
++	clientauth         uint16 // 👈 客户端自己的认证模式
++	serverauth         uint16 // 👈 服务端认证模式
++	pqPublicKey        any    //👈 记录拓展的公钥
++	pqPrivKey          any    //👈 记录拓展的私钥
+ 	pqSharedSecret     []byte
+ 
+ 	// 👈 这里记录证书里长期公钥封装形成的密文
+@@ -486,12 +483,11 @@
+ 		// 👈 这里生成抗量子公钥并发送，实现google的机制（仅经典认证分支）
+ 		if hs.protocoltype%10 == GoogleHelloRetryRequest && protocolTypeAuth(hs.protocoltype) == ClassicSign {
+ 			hs.hello.ProtocolType = QuantumSupportKEX
+-			pqPublicKey, pqPrivKey, _ := kyber768.GenerateKeyPair(rand.Reader)
+-			// 将公钥序列化为字节
+-			pubKeyBytes, _ := pqPublicKey.MarshalBinary()
+-			//PrivKeyBytes, _ := pqPrivKey.MarshalBinary()
++			pubKeyBytes, pqPrivKey, err := pqKEXGenerate(pqKEXAlgName(hs.c.config.KEMTLSKEXAlg))
++			if err != nil {
++				return err
++			}
+ 			hs.pqPrivKey = pqPrivKey
+-			hs.pqPublicKey = pqPublicKey
+ 			if (hs.protocoltype/10)*10 == QuantumSupportSignCert {
+ 				hs.protocoltype = QuantumSupportAKEX
+ 			} else {
+@@ -529,20 +525,11 @@
+ // 👈 这里发送抗量子密文
+ func (hs *clientHandshakeStateTLS13) processpublickey_sendCiphertext() error {
+ 	pqPublicKeyMsg := hs.serverHello.pqPublicKey
+-	// 反序列化并保存服务器的抗量子公钥
+-	var err1 error
+-	var pqCiphertext []byte
+-	hs.pqPublicKey, err1 = kyber768.Scheme().UnmarshalBinaryPublicKey(pqPublicKeyMsg)
+-	if err1 != nil {
+-		return errors.New("tls: invalid server PQ public key")
+-	}
+-	// 使用服务器的抗量子公钥进行加密
+-	scheme := kyber768.Scheme()
+-	var err error
+-	pqCiphertext, hs.pqSharedSecret, err = scheme.Encapsulate(hs.pqPublicKey)
++	pqCiphertext, ss, err := pqKEXEncapsulate(pqKEXAlgName(hs.c.config.KEMTLSKEXAlg), pqPublicKeyMsg)
+ 	if err != nil {
+-		return err
++		return fmt.Errorf("tls: invalid server PQ public key: %w", err)
+ 	}
++	hs.pqSharedSecret = ss
+ 
+ 	l := len(pqCiphertext)
+ 	hdr := []byte{
+@@ -644,7 +631,12 @@
+ 	sharedKey, err := hs.keyShareKeys.ecdhe.ECDH(peerKey)
+ 	// 👈 这里合并密钥
+ 	if hs.protocoltype%10 == QuantumSupportKEX {
+-		hs.pqSharedSecret, _ = kyber768.Scheme().Decapsulate(hs.pqPrivKey, hs.serverHello.pqCiphertext)
++		ss, err := pqKEXDecapsulate(pqKEXAlgName(hs.c.config.KEMTLSKEXAlg), hs.pqPrivKey, hs.serverHello.pqCiphertext)
++		if err != nil {
++			c.sendAlert(alertDecryptError)
++			return err
++		}
++		hs.pqSharedSecret = ss
+ 		sharedKey = append(sharedKey, hs.pqSharedSecret...)
+ 	}
+ 	// 👈 这里逻辑和之前的不一样，专利内容：因为这里是client端加密，所以不能和之前的抗量子混合一起计算
+diff -ruN .build/patch-seq7/src/crypto/tls/handshake_server_tls13.go .build/extracted/go_kemtls/src/crypto/tls/handshake_server_tls13.go
+--- a/src/crypto/tls/handshake_server_tls13.go	2026-11-20 17:08:08.947413569 +0800
++++ b/src/crypto/tls/handshake_server_tls13.go	2026-11-22 12:11:13.290754122 +0800
+@@ -16,15 +16,12 @@
+ 	"crypto/internal/hpke"
+ 	"crypto/myx509"
+ 	// 👈 这里是迁移模式新增的
+-	"crypto/rand"
+ 	"crypto/rsa"
+ 	"crypto/tls/internal/fips140tls"
+ 	"crypto/x509"
+ 	_ "crypto/x509"
+ 	"errors"
+ 	"fmt"
+-	"github.com/cloudflare/circl/kem"
+-	"github.com/cloudflare/circl/kem/kyber/kyber768"
+ 	"hash"
+ 	"internal/byteorder"
+ 	"io"
+@@ -75,14 +72,14 @@
+ 	//👈 这里记录了协议交互的具体类型
+ 	protocoltype            uint16
+ 	protocoltypestrict      uint16
+-	clientauth              uint16        // 👈 客户端认证模式
+-	serverauth              uint16        // 👈 服务端认证模式
+-	pqPublicKey             kem.PublicKey //👈 记录拓展的公钥
++	clientauth              uint16 // 👈 客户端认证模式
++	serverauth              uint16 // 👈 服务端认证模式
++	pqPublicKey             any    //👈 记录拓展的公钥
+ 	pqSharedSecret          []byte
+-	pqPrivKey               kem.PrivateKey //👈 记录拓展的私钥
+-	persistentssKEM         []byte         // 👈 这里记录用Server自己的长期公钥密钥生成的会话密钥
+-	persistentCiphertextKEM []byte         // 👈 这里记录用Client的长期公钥密钥生成的密文
+-	persistentssKEM_Client  []byte         // 👈 这里记录用Client的长期密钥生成的会话密钥
++	pqPrivKey               any    //👈 记录拓展的私钥
++	persistentssKEM         []byte // 👈 这里记录用Server自己的长期公钥密钥生成的会话密钥
++	persistentCiphertextKEM []byte // 👈 这里记录用Client的长期公钥密钥生成的密文
++	persistentssKEM_Client  []byte // 👈 这里记录用Client的长期密钥生成的会话密钥
+ }
+ 
+ func (hs *serverHandshakeStateTLS13) handshake() error {
+@@ -500,10 +497,12 @@
+ 
+ 	// 👈记录协议类型和处理客户端公钥
+ 	if hs.protocoltype%10 == QuantumSupportKEX {
+-		var pqCiphertext []byte
+-		pqPublicKeyByte := hs.clientHello.pqPublicKey
+-		hs.pqPublicKey, _ = kyber768.Scheme().UnmarshalBinaryPublicKey(pqPublicKeyByte)
+-		pqCiphertext, hs.pqSharedSecret, _ = kyber768.Scheme().Encapsulate(hs.pqPublicKey)
++		pqCiphertext, ss, err := pqKEXEncapsulate(pqKEXAlgName(c.config.KEMTLSKEXAlg), hs.clientHello.pqPublicKey)
++		if err != nil {
++			c.sendAlert(alertIllegalParameter)
++			return fmt.Errorf("tls: invalid client PQ public key: %w", err)
++		}
++		hs.pqSharedSecret = ss
+ 		hs.hello.pqCiphertext = pqCiphertext
+ 	}
+ 
+@@ -1024,25 +1023,13 @@
+ 	c := hs.c
+ 	// 👈 这里拓展专利内容
+ 	if hs.protocoltype%10 == QuantumSupportServerKeyGen {
+-		// 生成Kyber768密钥对
+-		pub, priv, err := kyber768.GenerateKeyPair(rand.Reader)
++		pubBytes, priv, err := pqKEXGenerate(pqKEXAlgName(c.config.KEMTLSKEXAlg))
+ 		if err != nil {
+ 			c.sendAlert(alertInternalError)
+ 			return err
+ 		}
+-
+ 		hs.pqPrivKey = priv
+-
+-		// 序列化公钥
+-		pubBytes, err := pub.MarshalBinary()
+-		if err != nil {
+-			c.sendAlert(alertInternalError)
+-			return err
+-		}
+-
+-		// 设置到ServerHello中
+ 		hs.hello.pqPublicKey = pubBytes
+-		hs.pqPublicKey = pub
+ 	}
+ 
+ 	if hs.echContext != nil {
+@@ -1094,7 +1081,12 @@
+ 		}
+ 		// 消息结构: [类型(1)][长度(3)][Kyber768 密文]
+ 		// 必须在切片前校验长度，避免畸形报文触发 panic。
+-		if len(pqKeyExchange.ciphertext) != 4+kyber768.CiphertextSize {
++		_, ctSize, err := pqKEXSizes(pqKEXAlgName(c.config.KEMTLSKEXAlg))
++		if err != nil {
++			c.sendAlert(alertInternalError)
++			return err
++		}
++		if len(pqKeyExchange.ciphertext) != 4+ctSize {
+ 			c.sendAlert(alertIllegalParameter)
+ 			return errors.New("tls: invalid PQ client key exchange length")
+ 		}
+@@ -1105,7 +1097,7 @@
+ 		innerLen := int(pqKeyExchange.ciphertext[1])<<16 |
+ 			int(pqKeyExchange.ciphertext[2])<<8 |
+ 			int(pqKeyExchange.ciphertext[3])
+-		if innerLen != kyber768.CiphertextSize {
++		if innerLen != ctSize {
+ 			c.sendAlert(alertIllegalParameter)
+ 			return errors.New("tls: invalid PQ client key exchange inner length")
+ 		}
+@@ -1113,7 +1105,7 @@
+ 		pqKeyExchange.ciphertext = pqKeyExchange.ciphertext[4:]
+ 
+ 		// 使用服务器私钥解密客户端发送的密文
+-		hs.pqSharedSecret, err = kyber768.Scheme().Decapsulate(hs.pqPrivKey, pqKeyExchange.ciphertext)
++		hs.pqSharedSecret, err = pqKEXDecapsulate(pqKEXAlgName(c.config.KEMTLSKEXAlg), hs.pqPrivKey, pqKeyExchange.ciphertext)
+ 		if err != nil {
+ 			c.sendAlert(alertIllegalParameter)
+ 			return errors.New("tls: invalid PQ key exchange")
+diff -ruN .build/patch-seq7/src/crypto/tls/pq_kex.go .build/extracted/go_kemtls/src/crypto/tls/pq_kex.go
+--- a/src/crypto/tls/pq_kex.go	1970-01-01 08:00:00.000000000 +0800
++++ b/src/crypto/tls/pq_kex.go	2026-11-22 12:13:21.580104196 +0800
+@@ -0,0 +1,112 @@
++package tls
++
++import (
++	"crypto/mlkem"
++	"fmt"
++
++	"github.com/cloudflare/circl/kem"
++	"github.com/cloudflare/circl/kem/kyber/kyber768"
++)
++
++// pqKEX 封装混合 KEX / ServerKeyGen 使用的 KEM 操作。KEM 证书路径走
++// crypto/pq 注册表，这里只处理 TLS key_share 侧的临时密钥。
++func pqKEXAlgName(cfg string) string {
++	if cfg == "" {
++		return "Kyber768"
++	}
++	return cfg
++}
++
++func pqKEXSizes(alg string) (pk, ct int, err error) {
++	switch alg {
++	case "Kyber768":
++		return kyber768.PublicKeySize, kyber768.CiphertextSize, nil
++	case "ML-KEM-768":
++		return 1184, 1088, nil
++	case "ML-KEM-1024":
++		return 1568, 1568, nil
++	default:
++		return 0, 0, fmt.Errorf("tls: unsupported KEX KEM algorithm %q", alg)
++	}
++}
++
++func pqKEXGenerate(alg string) (pub []byte, priv any, err error) {
++	switch alg {
++	case "Kyber768":
++		pk, sk, err := kyber768.Scheme().GenerateKeyPair()
++		if err != nil {
++			return nil, nil, err
++		}
++		raw, err := pk.MarshalBinary()
++		if err != nil {
++			return nil, nil, err
++		}
++		return raw, sk, nil
++	case "ML-KEM-768":
++		dk, err := mlkem.GenerateKey768()
++		if err != nil {
++			return nil, nil, err
++		}
++		return dk.EncapsulationKey().Bytes(), dk, nil
++	case "ML-KEM-1024":
++		dk, err := mlkem.GenerateKey1024()
++		if err != nil {
++			return nil, nil, err
++		}
++		return dk.EncapsulationKey().Bytes(), dk, nil
++	default:
++		return nil, nil, fmt.Errorf("tls: unsupported KEX KEM algorithm %q", alg)
++	}
++}
++
++func pqKEXEncapsulate(alg string, pub []byte) (ct, ss []byte, err error) {
++	switch alg {
++	case "Kyber768":
++		pk, err := kyber768.Scheme().UnmarshalBinaryPublicKey(pub)
++		if err != nil {
++			return nil, nil, err
++		}
++		return kyber768.Scheme().Encapsulate(pk)
++	case "ML-KEM-768":
++		ek, err := mlkem.NewEncapsulationKey768(pub)
++		if err != nil {
++			return nil, nil, err
++		}
++		ss, ct = ek.Encapsulate()
++		return ct, ss, nil
++	case "ML-KEM-1024":
++		ek, err := mlkem.NewEncapsulationKey1024(pub)
++		if err != nil {
++			return nil, nil, err
++		}
++		ss, ct = ek.Encapsulate()
++		return ct, ss, nil
++	default:
++		return nil, nil, fmt.Errorf("tls: unsupported KEX KEM algorithm %q", alg)
++	}
++}
++
++func pqKEXDecapsulate(alg string, priv any, ct []byte) ([]byte, error) {
++	switch alg {
++	case "Kyber768":
++		sk, ok := priv.(kem.PrivateKey)
++		if !ok {
++			return nil, fmt.Errorf("tls: invalid Kyber private key type")
++		}
++		return kyber768.Scheme().Decapsulate(sk, ct)
++	case "ML-KEM-768":
++		dk, ok := priv.(*mlkem.DecapsulationKey768)
++		if !ok {
++			return nil, fmt.Errorf("tls: invalid ML-KEM-768 private key type")
++		}
++		return dk.Decapsulate(ct)
++	case "ML-KEM-1024":
++		dk, ok := priv.(*mlkem.DecapsulationKey1024)
++		if !ok {
++			return nil, fmt.Errorf("tls: invalid ML-KEM-1024 private key type")
++		}
++		return dk.Decapsulate(ct)
++	default:
++		return nil, fmt.Errorf("tls: unsupported KEX KEM algorithm %q", alg)
++	}
++}
+diff -ruN .build/pq-baseline/src/crypto/pq/mlkem.go .build/extracted/go_kemtls/src/crypto/pq/mlkem.go
+--- a/src/crypto/pq/mlkem.go	1970-01-01 08:00:00.000000000 +0800
++++ b/src/crypto/pq/mlkem.go	2026-11-22 12:12:51.799397613 +0800
+@@ -0,0 +1,136 @@
++package pq
++
++import (
++	"crypto/mlkem"
++	"encoding/asn1"
++	"fmt"
++)
++
++// goKEMBackend 是纯 Go 的 ML-KEM 后端。C 注册表仍是默认入口；ML-KEM 由
++// Go 标准库实现，避免为了一个算法引入 C 依赖。
++type goKEMBackend struct {
++	name    string
++	version string
++	oid     asn1.ObjectIdentifier
++	level   int
++}
++
++func (b *goKEMBackend) publicKeySize() int {
++	if b.level == 1024 {
++		return 1568
++	}
++	return 1184
++}
++
++func (b *goKEMBackend) privateKeySize() int { return mlkem.SeedSize }
++func (b *goKEMBackend) ciphertextSize() int {
++	if b.level == 1024 {
++		return 1568
++	}
++	return 1088
++}
++func (b *goKEMBackend) sharedSecretSize() int { return mlkem.SharedKeySize }
++
++func (b *goKEMBackend) generateKey() (pk, sk []byte, err error) {
++	if b.level == 1024 {
++		dk, err := mlkem.GenerateKey1024()
++		if err != nil {
++			return nil, nil, err
++		}
++		return dk.EncapsulationKey().Bytes(), dk.Bytes(), nil
++	}
++	dk, err := mlkem.GenerateKey768()
++	if err != nil {
++		return nil, nil, err
++	}
++	return dk.EncapsulationKey().Bytes(), dk.Bytes(), nil
++}
++
++func (b *goKEMBackend) derivePublic(sk []byte) ([]byte, error) {
++	if b.level == 1024 {
++		dk, err := mlkem.NewDecapsulationKey1024(sk)
++		if err != nil {
++			return nil, err
++		}
++		return dk.EncapsulationKey().Bytes(), nil
++	}
++	dk, err := mlkem.NewDecapsulationKey768(sk)
++	if err != nil {
++		return nil, err
++	}
++	return dk.EncapsulationKey().Bytes(), nil
++}
++
++func (b *goKEMBackend) encapsulate(pk []byte) (ct, ss []byte, err error) {
++	if len(pk) != b.publicKeySize() {
++		return nil, nil, fmt.Errorf("%w: public key %d != %d", ErrLength, len(pk), b.publicKeySize())
++	}
++	var ek interface {
++		Encapsulate() ([]byte, []byte)
++	}
++	if b.level == 1024 {
++		k, err := mlkem.NewEncapsulationKey1024(pk)
++		if err != nil {
++			return nil, nil, err
++		}
++		ek = k
++	} else {
++		k, err := mlkem.NewEncapsulationKey768(pk)
++		if err != nil {
++			return nil, nil, err
++		}
++		ek = k
++	}
++	ss, ct = ek.Encapsulate()
++	return ct, ss, nil
++}
++
++func (b *goKEMBackend) decapsulate(sk, ct []byte) ([]byte, error) {
++	if len(ct) != b.ciphertextSize() {
++		return nil, fmt.Errorf("%w: ciphertext %d != %d", ErrLength, len(ct), b.ciphertextSize())
++	}
++	if b.level == 1024 {
++		dk, err := mlkem.NewDecapsulationKey1024(sk)
++		if err != nil {
++			return nil, err
++		}
++		return dk.Decapsulate(ct)
++	}
++	dk, err := mlkem.NewDecapsulationKey768(sk)
++	if err != nil {
++		return nil, err
++	}
++	return dk.Decapsulate(ct)
++}
++
++var goKEMAlgorithms = []*goKEMBackend{
++	{
++		name:    "ML-KEM-768",
++		version: "FIPS 203",
++		oid:     asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 4, 2},
++		level:   768,
++	},
++	{
++		name:    "ML-KEM-1024",
++		version: "FIPS 203",
++		oid:     asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 4, 3},
++		level:   1024,
++	},
++}
++
++func lookupGoKEM(name string) *Algorithm {
++	for _, b := range goKEMAlgorithms {
++		if b.name == name {
++			return &Algorithm{goKEM: b}
++		}
++	}
++	return nil
++}
++
++func allGoKEM() []*Algorithm {
++	out := make([]*Algorithm, 0, len(goKEMAlgorithms))
++	for _, b := range goKEMAlgorithms {
++		out = append(out, &Algorithm{goKEM: b})
++	}
++	return out
++}
+diff -ruN .build/pq-baseline/src/crypto/pq/pq.go .build/extracted/go_kemtls/src/crypto/pq/pq.go
+--- a/src/crypto/pq/pq.go	2026-11-20 09:34:22.000000000 +0800
++++ b/src/crypto/pq/pq.go	2026-11-22 12:12:51.798263181 +0800
+@@ -1,4 +1,4 @@
+-// Package pq is the single Go entry point for C-implemented PQ algorithms.
++// Package pqc is the single Go entry point for C-implemented PQ algorithms.
+ //
+ // The C side owns algorithm implementations and the registry; this package
+ // only exposes pq_alg_lookup() and the pq_alg descriptor to Go.  Callers do
+@@ -80,7 +80,8 @@
+ // Algorithm is a view of a C pq_alg descriptor.  The descriptor is static (or
+ // owned by a plugin for the process lifetime); no Go finalizer is needed.
+ type Algorithm struct {
+-	p *C.pq_alg
++	p     *C.pq_alg
++	goKEM *goKEMBackend
+ }
+ 
+ func wrap(p *C.pq_alg) *Algorithm {
+@@ -93,6 +94,9 @@
+ // Lookup is the single registration entry.  It returns placeholders too:
+ // call Available to distinguish "known but not linked" from "usable".
+ func Lookup(name string) (*Algorithm, error) {
++	if a := lookupGoKEM(name); a != nil {
++		return a, nil
++	}
+ 	cname := C.CString(name)
+ 	defer C.free(unsafe.Pointer(cname))
+ 	a := wrap(C.pq_alg_lookup(cname))
+@@ -103,21 +107,23 @@
+ }
+ 
+ func ByTLSCode(code uint16) (*Algorithm, error) {
+-	a := wrap(C.pq_alg_by_tls_code(C.uint16_t(code)))
+-	if a == nil {
+-		return nil, fmt.Errorf("%w: tls code 0x%04x", ErrNotFound, code)
++	for _, a := range All() {
++		if a.TLSCode() == code {
++			return a, nil
++		}
+ 	}
+-	return a, nil
++	return nil, fmt.Errorf("%w: tls code 0x%04x", ErrNotFound, code)
+ }
+ 
+ func All() []*Algorithm {
+ 	n := int(C.pq_alg_count())
+-	out := make([]*Algorithm, 0, n)
++	out := make([]*Algorithm, 0, n+len(goKEMAlgorithms))
+ 	for i := 0; i < n; i++ {
+ 		if a := wrap(C.pq_alg_at(C.size_t(i))); a != nil {
+ 			out = append(out, a)
+ 		}
+ 	}
++	out = append(out, allGoKEM()...)
+ 	return out
+ }
+ 
+@@ -131,22 +137,83 @@
+ 	return nil, fmt.Errorf("%w: oid %s", ErrNotFound, oid.String())
+ }
+ 
+-func (a *Algorithm) Name() string    { return C.GoString(a.p.name) }
+-func (a *Algorithm) Version() string { return C.GoString(a.p.version) }
+-func (a *Algorithm) TLSCode() uint16 { return uint16(a.p.tls_code) }
+-func (a *Algorithm) Kind() Kind      { return Kind(a.p.kind) }
+-func (a *Algorithm) Input() Input    { return Input(a.p.input) }
++func (a *Algorithm) Name() string {
++	if a.goKEM != nil {
++		return a.goKEM.name
++	}
++	return C.GoString(a.p.name)
++}
++func (a *Algorithm) Version() string {
++	if a.goKEM != nil {
++		return a.goKEM.version
++	}
++	return C.GoString(a.p.version)
++}
++func (a *Algorithm) TLSCode() uint16 {
++	if a.goKEM != nil {
++		return 0
++	}
++	return uint16(a.p.tls_code)
++}
++func (a *Algorithm) Kind() Kind {
++	if a.goKEM != nil {
++		return KindKEM
++	}
++	return Kind(a.p.kind)
++}
++func (a *Algorithm) Input() Input {
++	if a.goKEM != nil {
++		return InputMessage
++	}
++	return Input(a.p.input)
++}
+ func (a *Algorithm) IsPlaceholder() bool {
++	if a.goKEM != nil {
++		return false
++	}
+ 	return a.p.flags&C.uint32_t(1) != 0
+ }
+-func (a *Algorithm) Available() bool       { return C.pq_alg_available(a.p) != 0 }
+-func (a *Algorithm) PublicKeySize() int    { return int(a.p.pk_len) }
+-func (a *Algorithm) PrivateKeySize() int   { return int(a.p.sk_len) }
+-func (a *Algorithm) SignatureSize() int    { return int(a.p.sig_len) }
+-func (a *Algorithm) CiphertextSize() int   { return int(a.p.ct_len) }
+-func (a *Algorithm) SharedSecretSize() int { return int(a.p.ss_len) }
++func (a *Algorithm) Available() bool {
++	if a.goKEM != nil {
++		return true
++	}
++	return C.pq_alg_available(a.p) != 0
++}
++func (a *Algorithm) PublicKeySize() int {
++	if a.goKEM != nil {
++		return a.goKEM.publicKeySize()
++	}
++	return int(a.p.pk_len)
++}
++func (a *Algorithm) PrivateKeySize() int {
++	if a.goKEM != nil {
++		return a.goKEM.privateKeySize()
++	}
++	return int(a.p.sk_len)
++}
++func (a *Algorithm) SignatureSize() int {
++	if a.goKEM != nil {
++		return 0
++	}
++	return int(a.p.sig_len)
++}
++func (a *Algorithm) CiphertextSize() int {
++	if a.goKEM != nil {
++		return a.goKEM.ciphertextSize()
++	}
++	return int(a.p.ct_len)
++}
++func (a *Algorithm) SharedSecretSize() int {
++	if a.goKEM != nil {
++		return a.goKEM.sharedSecretSize()
++	}
++	return int(a.p.ss_len)
++}
+ 
+ func (a *Algorithm) OID() asn1.ObjectIdentifier {
++	if a.goKEM != nil {
++		return a.goKEM.oid
++	}
+ 	oid, err := parseOID(C.GoString(a.p.oid))
+ 	if err != nil {
+ 		return nil
+@@ -162,8 +229,13 @@
+ }
+ 
+ func (a *Algorithm) String() string {
++	oid := a.OID()
++	oidStr := ""
++	if oid != nil {
++		oidStr = oid.String()
++	}
+ 	return fmt.Sprintf("%s kind=%d tls=0x%04x oid=%s avail=%t",
+-		a.Name(), a.Kind(), a.TLSCode(), C.GoString(a.p.oid), a.Available())
++		a.Name(), a.Kind(), a.TLSCode(), oidStr, a.Available())
+ }
+ 
+ type KeyPair struct {
+@@ -185,6 +257,16 @@
+ 	if !a.Available() {
+ 		return nil, ErrNotImplemented
+ 	}
++	if a.goKEM != nil {
++		pk, sk, err := a.goKEM.generateKey()
++		if err != nil {
++			return nil, err
++		}
++		return &KeyPair{
++			Public:  &PublicKey{Algorithm: a, Raw: pk},
++			Private: &PrivateKey{Algorithm: a, Raw: sk},
++		}, nil
++	}
+ 	pkLen, skLen := a.PublicKeySize(), a.PrivateKeySize()
+ 	if pkLen <= 0 || skLen <= 0 {
+ 		return nil, fmt.Errorf("pqc: %s has no key sizes", a.Name())
+@@ -205,6 +287,13 @@
+ 	if err := a.checkPrivate(priv); err != nil {
+ 		return nil, err
+ 	}
++	if a.goKEM != nil {
++		pk, err := a.goKEM.derivePublic(priv.Raw)
++		if err != nil {
++			return nil, err
++		}
++		return &PublicKey{Algorithm: a, Raw: pk}, nil
++	}
+ 	pk := make([]byte, a.PublicKeySize())
+ 	if st := C.pqc_call_pub_from_sk(a.p, cptr(priv.Raw), cptr(pk)); st != C.PQ_OK {
+ 		return nil, statusErr("pub_from_sk", st)
+@@ -232,6 +321,9 @@
+ // Sign signs digest exactly as passed.  The TLS stack passes the SHA-512
+ // CertificateVerify digest; the C implementation must not hash it again.
+ func (a *Algorithm) Sign(priv *PrivateKey, digest []byte) ([]byte, error) {
++	if a.goKEM != nil {
++		return nil, ErrKind
++	}
+ 	if a.Kind() != KindSig {
+ 		return nil, ErrKind
+ 	}
+@@ -250,6 +342,9 @@
+ }
+ 
+ func (a *Algorithm) Verify(pub *PublicKey, digest, sig []byte) error {
++	if a.goKEM != nil {
++		return ErrKind
++	}
+ 	if a.Kind() != KindSig {
+ 		return ErrKind
+ 	}
+@@ -271,6 +366,13 @@
+ }
+ 
+ func (a *Algorithm) Encapsulate(pub *PublicKey) (ct, ss []byte, err error) {
++	if a.goKEM != nil {
++		if pub == nil || pub.Algorithm == nil || pub.Algorithm.Name() != a.Name() ||
++			len(pub.Raw) != a.PublicKeySize() {
++			return nil, nil, ErrInvalidKey
++		}
++		return a.goKEM.encapsulate(pub.Raw)
++	}
+ 	if a.Kind() != KindKEM {
+ 		return nil, nil, ErrKind
+ 	}
+@@ -291,6 +393,12 @@
+ }
+ 
+ func (a *Algorithm) Decapsulate(priv *PrivateKey, ct []byte) ([]byte, error) {
++	if a.goKEM != nil {
++		if err := a.checkPrivate(priv); err != nil {
++			return nil, err
++		}
++		return a.goKEM.decapsulate(priv.Raw, ct)
++	}
+ 	if a.Kind() != KindKEM {
+ 		return nil, ErrKind
+ 	}

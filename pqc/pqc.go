@@ -80,7 +80,8 @@ var (
 // Algorithm is a view of a C pq_alg descriptor.  The descriptor is static (or
 // owned by a plugin for the process lifetime); no Go finalizer is needed.
 type Algorithm struct {
-	p *C.pq_alg
+	p     *C.pq_alg
+	goKEM *goKEMBackend
 }
 
 func wrap(p *C.pq_alg) *Algorithm {
@@ -93,6 +94,9 @@ func wrap(p *C.pq_alg) *Algorithm {
 // Lookup is the single registration entry.  It returns placeholders too:
 // call Available to distinguish "known but not linked" from "usable".
 func Lookup(name string) (*Algorithm, error) {
+	if a := lookupGoKEM(name); a != nil {
+		return a, nil
+	}
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 	a := wrap(C.pq_alg_lookup(cname))
@@ -103,21 +107,23 @@ func Lookup(name string) (*Algorithm, error) {
 }
 
 func ByTLSCode(code uint16) (*Algorithm, error) {
-	a := wrap(C.pq_alg_by_tls_code(C.uint16_t(code)))
-	if a == nil {
-		return nil, fmt.Errorf("%w: tls code 0x%04x", ErrNotFound, code)
+	for _, a := range All() {
+		if a.TLSCode() == code {
+			return a, nil
+		}
 	}
-	return a, nil
+	return nil, fmt.Errorf("%w: tls code 0x%04x", ErrNotFound, code)
 }
 
 func All() []*Algorithm {
 	n := int(C.pq_alg_count())
-	out := make([]*Algorithm, 0, n)
+	out := make([]*Algorithm, 0, n+len(goKEMAlgorithms))
 	for i := 0; i < n; i++ {
 		if a := wrap(C.pq_alg_at(C.size_t(i))); a != nil {
 			out = append(out, a)
 		}
 	}
+	out = append(out, allGoKEM()...)
 	return out
 }
 
@@ -131,22 +137,83 @@ func ByOID(oid asn1.ObjectIdentifier) (*Algorithm, error) {
 	return nil, fmt.Errorf("%w: oid %s", ErrNotFound, oid.String())
 }
 
-func (a *Algorithm) Name() string    { return C.GoString(a.p.name) }
-func (a *Algorithm) Version() string { return C.GoString(a.p.version) }
-func (a *Algorithm) TLSCode() uint16 { return uint16(a.p.tls_code) }
-func (a *Algorithm) Kind() Kind      { return Kind(a.p.kind) }
-func (a *Algorithm) Input() Input    { return Input(a.p.input) }
+func (a *Algorithm) Name() string {
+	if a.goKEM != nil {
+		return a.goKEM.name
+	}
+	return C.GoString(a.p.name)
+}
+func (a *Algorithm) Version() string {
+	if a.goKEM != nil {
+		return a.goKEM.version
+	}
+	return C.GoString(a.p.version)
+}
+func (a *Algorithm) TLSCode() uint16 {
+	if a.goKEM != nil {
+		return 0
+	}
+	return uint16(a.p.tls_code)
+}
+func (a *Algorithm) Kind() Kind {
+	if a.goKEM != nil {
+		return KindKEM
+	}
+	return Kind(a.p.kind)
+}
+func (a *Algorithm) Input() Input {
+	if a.goKEM != nil {
+		return InputMessage
+	}
+	return Input(a.p.input)
+}
 func (a *Algorithm) IsPlaceholder() bool {
+	if a.goKEM != nil {
+		return false
+	}
 	return a.p.flags&C.uint32_t(1) != 0
 }
-func (a *Algorithm) Available() bool       { return C.pq_alg_available(a.p) != 0 }
-func (a *Algorithm) PublicKeySize() int    { return int(a.p.pk_len) }
-func (a *Algorithm) PrivateKeySize() int   { return int(a.p.sk_len) }
-func (a *Algorithm) SignatureSize() int    { return int(a.p.sig_len) }
-func (a *Algorithm) CiphertextSize() int   { return int(a.p.ct_len) }
-func (a *Algorithm) SharedSecretSize() int { return int(a.p.ss_len) }
+func (a *Algorithm) Available() bool {
+	if a.goKEM != nil {
+		return true
+	}
+	return C.pq_alg_available(a.p) != 0
+}
+func (a *Algorithm) PublicKeySize() int {
+	if a.goKEM != nil {
+		return a.goKEM.publicKeySize()
+	}
+	return int(a.p.pk_len)
+}
+func (a *Algorithm) PrivateKeySize() int {
+	if a.goKEM != nil {
+		return a.goKEM.privateKeySize()
+	}
+	return int(a.p.sk_len)
+}
+func (a *Algorithm) SignatureSize() int {
+	if a.goKEM != nil {
+		return 0
+	}
+	return int(a.p.sig_len)
+}
+func (a *Algorithm) CiphertextSize() int {
+	if a.goKEM != nil {
+		return a.goKEM.ciphertextSize()
+	}
+	return int(a.p.ct_len)
+}
+func (a *Algorithm) SharedSecretSize() int {
+	if a.goKEM != nil {
+		return a.goKEM.sharedSecretSize()
+	}
+	return int(a.p.ss_len)
+}
 
 func (a *Algorithm) OID() asn1.ObjectIdentifier {
+	if a.goKEM != nil {
+		return a.goKEM.oid
+	}
 	oid, err := parseOID(C.GoString(a.p.oid))
 	if err != nil {
 		return nil
@@ -162,8 +229,13 @@ func (a *Algorithm) TLSName() string {
 }
 
 func (a *Algorithm) String() string {
+	oid := a.OID()
+	oidStr := ""
+	if oid != nil {
+		oidStr = oid.String()
+	}
 	return fmt.Sprintf("%s kind=%d tls=0x%04x oid=%s avail=%t",
-		a.Name(), a.Kind(), a.TLSCode(), C.GoString(a.p.oid), a.Available())
+		a.Name(), a.Kind(), a.TLSCode(), oidStr, a.Available())
 }
 
 type KeyPair struct {
@@ -185,6 +257,16 @@ func (a *Algorithm) GenerateKey() (*KeyPair, error) {
 	if !a.Available() {
 		return nil, ErrNotImplemented
 	}
+	if a.goKEM != nil {
+		pk, sk, err := a.goKEM.generateKey()
+		if err != nil {
+			return nil, err
+		}
+		return &KeyPair{
+			Public:  &PublicKey{Algorithm: a, Raw: pk},
+			Private: &PrivateKey{Algorithm: a, Raw: sk},
+		}, nil
+	}
 	pkLen, skLen := a.PublicKeySize(), a.PrivateKeySize()
 	if pkLen <= 0 || skLen <= 0 {
 		return nil, fmt.Errorf("pqc: %s has no key sizes", a.Name())
@@ -204,6 +286,13 @@ func (a *Algorithm) GenerateKey() (*KeyPair, error) {
 func (a *Algorithm) DerivePublic(priv *PrivateKey) (*PublicKey, error) {
 	if err := a.checkPrivate(priv); err != nil {
 		return nil, err
+	}
+	if a.goKEM != nil {
+		pk, err := a.goKEM.derivePublic(priv.Raw)
+		if err != nil {
+			return nil, err
+		}
+		return &PublicKey{Algorithm: a, Raw: pk}, nil
 	}
 	pk := make([]byte, a.PublicKeySize())
 	if st := C.pqc_call_pub_from_sk(a.p, cptr(priv.Raw), cptr(pk)); st != C.PQ_OK {
@@ -232,6 +321,9 @@ func (a *Algorithm) ParsePrivateKey(raw []byte) (*PrivateKey, error) {
 // Sign signs digest exactly as passed.  The TLS stack passes the SHA-512
 // CertificateVerify digest; the C implementation must not hash it again.
 func (a *Algorithm) Sign(priv *PrivateKey, digest []byte) ([]byte, error) {
+	if a.goKEM != nil {
+		return nil, ErrKind
+	}
 	if a.Kind() != KindSig {
 		return nil, ErrKind
 	}
@@ -250,6 +342,9 @@ func (a *Algorithm) Sign(priv *PrivateKey, digest []byte) ([]byte, error) {
 }
 
 func (a *Algorithm) Verify(pub *PublicKey, digest, sig []byte) error {
+	if a.goKEM != nil {
+		return ErrKind
+	}
 	if a.Kind() != KindSig {
 		return ErrKind
 	}
@@ -271,6 +366,13 @@ func (a *Algorithm) Verify(pub *PublicKey, digest, sig []byte) error {
 }
 
 func (a *Algorithm) Encapsulate(pub *PublicKey) (ct, ss []byte, err error) {
+	if a.goKEM != nil {
+		if pub == nil || pub.Algorithm == nil || pub.Algorithm.Name() != a.Name() ||
+			len(pub.Raw) != a.PublicKeySize() {
+			return nil, nil, ErrInvalidKey
+		}
+		return a.goKEM.encapsulate(pub.Raw)
+	}
 	if a.Kind() != KindKEM {
 		return nil, nil, ErrKind
 	}
@@ -291,6 +393,12 @@ func (a *Algorithm) Encapsulate(pub *PublicKey) (ct, ss []byte, err error) {
 }
 
 func (a *Algorithm) Decapsulate(priv *PrivateKey, ct []byte) ([]byte, error) {
+	if a.goKEM != nil {
+		if err := a.checkPrivate(priv); err != nil {
+			return nil, err
+		}
+		return a.goKEM.decapsulate(priv.Raw, ct)
+	}
 	if a.Kind() != KindKEM {
 		return nil, ErrKind
 	}

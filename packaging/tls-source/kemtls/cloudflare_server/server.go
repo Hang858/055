@@ -164,6 +164,7 @@ func main() {
 		KEMTLSSigKey:              os.Getenv("KEMTLS_SIG_KEY"),
 		KEMTLSKEMAlg:              os.Getenv("KEMTLS_KEM_ALG"),
 		KEMTLSKEMKey:              os.Getenv("KEMTLS_KEM_KEY"),
+		KEMTLSKEXAlg:              os.Getenv("KEMTLS_KEX_ALG"),
 	}
 
 	// 使用 TLS 监听

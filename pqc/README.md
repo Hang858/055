@@ -5,14 +5,12 @@
 
 当前状态：
 
-- **KEM 路径已接进补丁 GOROOT**：`crypto/pq` 注册表 + `myx509` 通用封装/解封装 + TLS `KEMTLSKEMAlg/KEMTLSKEMKey`；
-  已用 `PLACEHOLDER-KEM` 跑通 `ProtocolType=21` 的 KEM 证书握手（RSA CertificateVerify）。
-- **签名路径还没接 BiT**：`BiT` 仍是签名占位符，`Available() == false`，操作返回 `ErrNotImplemented`；
-  TLS 仍走现有 `myx509` 的 Dilithium/SLH 分支。
-- `KEM-TEMPLATE`：KEM 占位描述符；后续 C KEM 到位时替换。
-- `PLACEHOLDER-SIG` / `PLACEHOLDER-KEM`：仅用于测试注册表和 cgo 边界，**不是密码学算法**。
-
-KEM 共享密钥目前仍没有进入 `key_schedule.go`；本补丁把两段 KEM SS 绑定到了 client Finished（`kemFinishedHash`），错误私钥会失败，但应用数据密钥仍来自 ECDHE。
+- **ML-KEM 已接入**：Go 标准库 `crypto/mlkem` 作为 Go 后端注册 `ML-KEM-768/1024`，
+  `myx509` 通过证书 `.1.4` OID 查找，TLS KEX/ServerKeyGen 通过 `KEMTLSKEXAlg` 选择；
+- **C 注册表仍保留**：`BiT` 是签名占位符，`KEM-TEMPLATE` 是 KEM 占位符；
+  `PLACEHOLDER-SIG` / `PLACEHOLDER-KEM` 仅用于测试，不是密码学算法；
+- KEM 共享秘密已进入 AHS 两阶段密钥调度（见 `docs/AHS两阶段密钥调度-20261120.md`）；
+- 签名路径仍走 `myx509` 的 Dilithium/SLH-DSA 分支，BiT 签名尚未实现。
 
 ## 快速验证
 
@@ -29,6 +27,8 @@ BiT              1     0xfe20  1.3.6.1.4.1.54321.22.1  placeholder  false
 KEM-TEMPLATE     2     0x0000  1.3.6.1.4.1.54321.22.2  placeholder  false
 PLACEHOLDER-SIG  1     0xfe7f  1.3.6.1.4.1.54321.99.1  toy-1        true
 PLACEHOLDER-KEM  2     0x0000  1.3.6.1.4.1.54321.99.2  toy-1        true
+ML-KEM-768       2     0x0000  2.16.840.1.101.3.4.4.2  FIPS 203     true
+ML-KEM-1024      2     0x0000  2.16.840.1.101.3.4.4.3  FIPS 203     true
 ```
 
 ## 目录
@@ -40,7 +40,9 @@ pqc/
 ├── pq_placeholder.c          # 仅测试用玩具签名/KEM
 ├── pq_bit_placeholder.c      # BiT / KEM-TEMPLATE 占位描述符
 ├── pqc.go                    # 唯一 Go 入口：Lookup / All / ByTLSCode
+├── mlkem.go                  # Go 标准库 ML-KEM-768/1024 后端
 ├── pqc_test.go               # 注册表、签名、KEM、cgo 边界
+├── mlkem_test.go             # ML-KEM 往返、OID、公钥派生
 ├── cmd/pqclist/main.go       # 列出注册表
 ├── cmd/pqkemkey/main.go      # 生成 KEM 原始密钥
 └── Makefile                  # 静态库 + go test
