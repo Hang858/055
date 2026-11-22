@@ -6,7 +6,7 @@ SRC     := pq_registry.c pq_placeholder.c pq_bit_placeholder.c
 OBJ     := $(SRC:.c=.o)
 LIB     := lib/libpqalg.a
 
-.PHONY: all lib test clean
+.PHONY: all lib test vendor clean
 all: lib
 
 lib: $(LIB)
@@ -18,8 +18,12 @@ $(LIB): $(OBJ)
 %.o: %.c include/pq_alg.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-test:
-	GOCACHE=$(GOCACHE) CGO_ENABLED=1 GOTOOLCHAIN=local go test ./...
+vendor:
+	cd vendor && ./build.sh
+
+test: vendor
+	GOCACHE=$(GOCACHE) CGO_ENABLED=1 GOTOOLCHAIN=local \
+	  LIGHTLATTICE_LIBDIR=$(CURDIR)/vendor/lib go test ./...
 
 clean:
 	rm -f $(OBJ) $(LIB)

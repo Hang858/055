@@ -8,6 +8,7 @@ package pqc
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/include -std=c11
+#cgo LDFLAGS: -ldl -lpthread
 #include "pq_alg.h"
 #include <stdlib.h>
 

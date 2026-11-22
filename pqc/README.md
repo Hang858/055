@@ -201,3 +201,17 @@ RSA 认证 + 通用 KEM 密文交换，不能称为完整的 KEMTLS 抗量子认
 旧 CIRCL 兼容分支。`PLACEHOLDER-KEM` 已作为纯 C 注册表样例跑通 ServerKeyGen。
 
 详见 `docs/KEM接入接口-20261122.md`。
+
+## BiT / PolarLAC
+
+`vendor/` 保存 light-lattice.org 的 BiT v2.1 和 PolarLAC v1.0 源码；
+`vendor/build.sh` 把每个安全等级编成独立 `.so`。`lightlattice.c` 用 dlopen
+适配，不把 vendor 头文件带进 TLS。
+
+```sh
+cd vendor && ./build.sh
+LIGHTLATTICE_LIBDIR=$PWD/lib go run ./cmd/pqclist
+```
+
+新增算法只改 `vendor/` 和适配层，TLS 仍通过 `pq.Lookup`/`ByOID` 使用。
+详见 `docs/light-lattice集成-20261122.md`。

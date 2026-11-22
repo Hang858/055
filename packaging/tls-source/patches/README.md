@@ -235,3 +235,30 @@ patch -p1 < mlkem-adaptation.patch
 
 `pqc` 模块的 Go 后端随源码提交；GOROOT 侧的 `crypto/pq` 修改在补丁里。
 详见 `docs/ML-KEM适配与矩阵-20261122.md`。
+
+## light-lattice-integration.patch
+
+对应 2026-11-22 的 BiT/PolarLAC 接入：
+
+- 新增 `pqc/vendor/`（BiT v2.1、PolarLAC v1.0 源码）和 `build.sh`；
+- `pqc/lightlattice.c` 用 dlopen + 独立 `.so` 适配 `sig_*`/`kem_*`，
+  注册 `BiT-128/256/512` 和 `POLARLAC-*` 描述符；
+- `crypto/pq` 注册这些描述符，签名算法允许没有 `pub_from_sk`；
+- `crypto/tls` 增加 BiT 私有签名码点 0xFE30–0xFE32；
+- `myx509` 增加 BiT OID、签名/验签 fallback 到 `crypto/pq`；
+- 新增 `pqc/cmd/lightcert` 生成 BiT/PolarLAC 证书。
+
+应用顺序：在 `mlkem-adaptation.patch` 之后：
+
+```bash
+patch -p1 < light-lattice-integration.patch
+```
+
+运行时需要：
+
+```bash
+cd pqc/vendor && ./build.sh
+export LIGHTLATTICE_LIBDIR=$PWD/lib
+```
+
+详见 `docs/light-lattice集成-20261122.md`。

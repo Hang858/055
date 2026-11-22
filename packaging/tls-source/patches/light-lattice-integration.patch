@@ -1,0 +1,507 @@
+diff -ruN .build/patch-seq9/src/crypto/tls/auth.go .build/extracted/go_kemtls/src/crypto/tls/auth.go
+--- a/src/crypto/tls/auth.go	2026-11-16 22:54:02.927231452 +0800
++++ b/src/crypto/tls/auth.go	2026-11-22 15:34:52.841667509 +0800
+@@ -106,7 +106,7 @@
+ 		sigType = signatureECDSA
+ 	case Ed25519:
+ 		sigType = signatureEd25519
+-	case DILITHIUM2withSHA512, DILITHIUM3withSHA512, DILITHIUM5withSHA512, SLHDSASHA2_128s, SLHDSASHA2_128f, SLHDSASHA2_192s, SLHDSASHA2_192f, SLHDSASHA2_256s, SLHDSASHA2_256f:
++	case DILITHIUM2withSHA512, DILITHIUM3withSHA512, DILITHIUM5withSHA512, SLHDSASHA2_128s, SLHDSASHA2_128f, SLHDSASHA2_192s, SLHDSASHA2_192f, SLHDSASHA2_256s, SLHDSASHA2_256f, BIT128withSHA512, BIT256withSHA512, BIT512withSHA512:
+ 		sigType = signatureDilithium
+ 	default:
+ 		return 0, 0, fmt.Errorf("unsupported signature algorithm: %v", signatureAlgorithm)
+@@ -118,7 +118,7 @@
+ 		hash = crypto.SHA256
+ 	case PKCS1WithSHA384, PSSWithSHA384, ECDSAWithP384AndSHA384:
+ 		hash = crypto.SHA384
+-	case PKCS1WithSHA512, PSSWithSHA512, ECDSAWithP521AndSHA512, DILITHIUM2withSHA512, DILITHIUM3withSHA512, DILITHIUM5withSHA512, SLHDSASHA2_128s, SLHDSASHA2_128f, SLHDSASHA2_192s, SLHDSASHA2_192f, SLHDSASHA2_256s, SLHDSASHA2_256f:
++	case PKCS1WithSHA512, PSSWithSHA512, ECDSAWithP521AndSHA512, DILITHIUM2withSHA512, DILITHIUM3withSHA512, DILITHIUM5withSHA512, SLHDSASHA2_128s, SLHDSASHA2_128f, SLHDSASHA2_192s, SLHDSASHA2_192f, SLHDSASHA2_256s, SLHDSASHA2_256f, BIT128withSHA512, BIT256withSHA512, BIT512withSHA512:
+ 		hash = crypto.SHA512
+ 	case Ed25519:
+ 		hash = directSigning
+diff -ruN .build/patch-seq9/src/crypto/tls/common.go .build/extracted/go_kemtls/src/crypto/tls/common.go
+--- a/src/crypto/tls/common.go	2026-11-22 12:20:20.258772591 +0800
++++ b/src/crypto/tls/common.go	2026-11-22 15:34:34.661758320 +0800
+@@ -493,6 +493,11 @@
+ 	DILITHIUM3withSHA512 SignatureScheme = 0xFE02
+ 	DILITHIUM5withSHA512 SignatureScheme = 0xFE03
+ 
++	// BiT signatures (project-private TLS code points).
++	BIT128withSHA512 SignatureScheme = 0xFE30
++	BIT256withSHA512 SignatureScheme = 0xFE31
++	BIT512withSHA512 SignatureScheme = 0xFE32
++
+ 	// Post-Quantum SLH-DSA algorithms (project-private TLS code points).
+ 	SLHDSASHA2_128s SignatureScheme = 0xFE10
+ 	SLHDSASHA2_128f SignatureScheme = 0xFE11
+@@ -518,6 +523,14 @@
+ 	return false
+ }
+ 
++func IsBiTScheme(scheme SignatureScheme) bool {
++	switch scheme {
++	case BIT128withSHA512, BIT256withSHA512, BIT512withSHA512:
++		return true
++	}
++	return false
++}
++
+ func IsSLHDSAScheme(scheme SignatureScheme) bool {
+ 	switch scheme {
+ 	case SLHDSASHA2_128s, SLHDSASHA2_128f,
+@@ -529,7 +542,7 @@
+ }
+ 
+ func IsPQSignatureScheme(scheme SignatureScheme) bool {
+-	return IsDilithiumScheme(scheme) || IsSLHDSAScheme(scheme)
++	return IsDilithiumScheme(scheme) || IsSLHDSAScheme(scheme) || IsBiTScheme(scheme)
+ }
+ 
+ func PQSchemeName(scheme SignatureScheme) string {
+@@ -552,6 +565,12 @@
+ 		return "SLH-DSA-SHA2-256s"
+ 	case SLHDSASHA2_256f:
+ 		return "SLH-DSA-SHA2-256f"
++	case BIT128withSHA512:
++		return "BiT-128"
++	case BIT256withSHA512:
++		return "BiT-256"
++	case BIT512withSHA512:
++		return "BiT-512"
+ 	}
+ 	return ""
+ }
+@@ -576,6 +595,12 @@
+ 		return SLHDSASHA2_256s, true
+ 	case "SLH-DSA-SHA2-256f":
+ 		return SLHDSASHA2_256f, true
++	case "BiT-128":
++		return BIT128withSHA512, true
++	case "BiT-256":
++		return BIT256withSHA512, true
++	case "BiT-512":
++		return BIT512withSHA512, true
+ 	}
+ 	return 0, false
+ }
+diff -ruN .build/patch-seq9/src/crypto/tls/defaults.go .build/extracted/go_kemtls/src/crypto/tls/defaults.go
+--- a/src/crypto/tls/defaults.go	2026-11-16 22:54:02.951096283 +0800
++++ b/src/crypto/tls/defaults.go	2026-11-22 15:34:34.662738962 +0800
+@@ -51,6 +51,9 @@
+ 		SLHDSASHA2_192f,
+ 		SLHDSASHA2_256s,
+ 		SLHDSASHA2_256f,
++		BIT128withSHA512,
++		BIT256withSHA512,
++		BIT512withSHA512,
+ 	}
+ }
+ 
+diff -ruN .build/patch-seq9/src/crypto/myx509/myx509.go .build/extracted/go_kemtls/src/crypto/myx509/myx509.go
+--- a/src/crypto/myx509/myx509.go	2026-11-20 17:08:08.939788207 +0800
++++ b/src/crypto/myx509/myx509.go	2026-11-22 15:34:26.702009569 +0800
+@@ -50,6 +50,9 @@
+ 	"SLH-DSA-SHA2-192f": {2, 16, 840, 1, 101, 3, 4, 3, 23},
+ 	"SLH-DSA-SHA2-256s": {2, 16, 840, 1, 101, 3, 4, 3, 24},
+ 	"SLH-DSA-SHA2-256f": {2, 16, 840, 1, 101, 3, 4, 3, 25},
++	"BiT-128":           {1, 3, 6, 1, 4, 1, 54321, 30, 1},
++	"BiT-256":           {1, 3, 6, 1, 4, 1, 54321, 30, 2},
++	"BiT-512":           {1, 3, 6, 1, 4, 1, 54321, 30, 3},
+ }
+ 
+ // 使用 Dilithium2（mode2）
+@@ -2146,6 +2149,13 @@
+ // the certificate's algorithm extension. Legacy certificates default to
+ // Dilithium2.
+ func pqSignWithAlg(algName string, raw, data []byte) ([]byte, error) {
++	if alg, err := pq.Lookup(algName); err == nil && alg.Kind() == pq.KindSig {
++		priv, err := alg.ParsePrivateKey(raw)
++		if err != nil {
++			return nil, err
++		}
++		return alg.Sign(priv, data)
++	}
+ 	switch algName {
+ 	case "Dilithium2":
+ 		var sk mode2.PrivateKey
+@@ -2189,6 +2199,13 @@
+ }
+ 
+ func pqVerifyWithAlg(algName string, raw, data, sig []byte) (bool, error) {
++	if alg, err := pq.Lookup(algName); err == nil && alg.Kind() == pq.KindSig {
++		pub, err := alg.ParsePublicKey(raw)
++		if err != nil {
++			return false, err
++		}
++		return alg.Verify(pub, data, sig) == nil, nil
++	}
+ 	switch algName {
+ 	case "Dilithium2":
+ 		var pk mode2.PublicKey
+diff -ruN .build/patch-seq9/src/crypto/pq/lightlattice.c .build/extracted/go_kemtls/src/crypto/pq/lightlattice.c
+--- a/src/crypto/pq/lightlattice.c	1970-01-01 08:00:00.000000000 +0800
++++ b/src/crypto/pq/lightlattice.c	2026-11-22 15:38:51.166065765 +0800
+@@ -0,0 +1,300 @@
++/*
++ * light-lattice adapters for the pq_alg C ABI.
++ *
++ * The vendor algorithms are built as separate shared libraries
++ * (pqc/vendor/build.sh).  This file only loads them with dlopen and adapts
++ * their NGCC-style API to pq_alg.  Replacing an algorithm therefore means
++ * replacing one .so, not editing TLS.
++ */
++#define _GNU_SOURCE
++#include "pq_alg.h"
++
++#include <dlfcn.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#if defined(__linux__)
++#include <sys/random.h>
++#endif
++
++#define BIT128_PK 1264
++#define BIT128_SK 1696
++#define BIT128_SIG 1440
++#define BIT256_PK 2528
++#define BIT256_SK 3392
++#define BIT256_SIG 2976
++#define BIT512_PK 5824
++#define BIT512_SK 7488
++#define BIT512_SIG 7474
++
++#define POLARLAC_REJECT_SEED 16
++
++typedef int (*bit_sig_fn)(unsigned char *, unsigned long long,
++                          unsigned char *, unsigned long long);
++typedef int (*kem_keygen_fn)(unsigned char *, unsigned long long *,
++                             unsigned char *, unsigned long long *);
++typedef int (*kem_enc_fn)(unsigned char *, unsigned long long,
++                          unsigned char *, unsigned long long *,
++                          unsigned char *, unsigned long long *);
++typedef int (*kem_dec_fn)(unsigned char *, unsigned long long,
++                          unsigned char *, unsigned long long,
++                          unsigned char *, unsigned long long *);
++
++typedef struct {
++    pthread_mutex_t load_lock;
++    pthread_mutex_t op_lock;
++    void *handle;
++    void *drng;
++    int (*init_random)(void *, const unsigned char *, unsigned long long);
++    int (*get_random)(void *, unsigned char *, unsigned long long);
++    int (*keygen)(unsigned char *, unsigned long long *,
++                  unsigned char *, unsigned long long *);
++    int (*sign)(unsigned char *, unsigned long long,
++                unsigned char *, unsigned long long,
++                unsigned char *, unsigned long long *);
++    int (*verify)(unsigned char *, unsigned long long,
++                  unsigned char *, unsigned long long,
++                  unsigned char *, unsigned long long);
++    int (*enc)(unsigned char *, unsigned long long,
++               unsigned char *, unsigned long long *,
++               unsigned char *, unsigned long long *);
++    int (*dec)(unsigned char *, unsigned long long,
++               unsigned char *, unsigned long long,
++               unsigned char *, unsigned long long *);
++    int loaded;
++    int failed;
++} ll_api;
++
++#define LL_API_INIT {PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER, \
++                     NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0}
++
++static ll_api bit128_api = LL_API_INIT;
++static ll_api bit256_api = LL_API_INIT;
++static ll_api bit512_api = LL_API_INIT;
++static ll_api polarlac128_api = LL_API_INIT;
++static ll_api polarlac256_api = LL_API_INIT;
++static ll_api polarlac512_api = LL_API_INIT;
++static ll_api polarlac_light_api = LL_API_INIT;
++static ll_api polarlac_512star_api = LL_API_INIT;
++
++static int os_random(unsigned char *out, size_t len) {
++#if defined(__linux__)
++    size_t off = 0;
++    while (off < len) {
++        ssize_t n = getrandom(out + off, len - off, 0);
++        if (n <= 0) break;
++        off += (size_t)n;
++    }
++    if (off == len) return 0;
++#endif
++    FILE *f = fopen("/dev/urandom", "rb");
++    if (f == NULL) return -1;
++    size_t n = fread(out, 1, len, f);
++    fclose(f);
++    return n == len ? 0 : -1;
++}
++
++static void *ll_sym(void *h, const char *name) {
++    void *p = dlsym(h, name);
++    return p;
++}
++
++static int ll_load(ll_api *api, const char *so_name, int kind) {
++    pthread_mutex_lock(&api->load_lock);
++    if (api->loaded || api->failed) {
++        int ok = api->loaded;
++        pthread_mutex_unlock(&api->load_lock);
++        return ok;
++    }
++    const char *dir = getenv("LIGHTLATTICE_LIBDIR");
++    if (dir == NULL || dir[0] == '\0') dir = ".";
++    char path[1024];
++    snprintf(path, sizeof(path), "%s/%s", dir, so_name);
++    void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
++    if (h == NULL) {
++        fprintf(stderr, "light-lattice: dlopen %s failed: %s\n", path, dlerror());
++        api->failed = 1;
++        pthread_mutex_unlock(&api->load_lock);
++        return 0;
++    }
++    api->handle = h;
++    api->drng = ll_sym(h, "drng_algorithm");
++    api->init_random = (int (*)(void *, const unsigned char *, unsigned long long))ll_sym(h, "init_random_number");
++    api->get_random = (int (*)(void *, unsigned char *, unsigned long long))ll_sym(h, "get_random_number");
++    if (kind == PQ_KIND_SIG) {
++        api->keygen = (int (*)(unsigned char *, unsigned long long *, unsigned char *, unsigned long long *))ll_sym(h, "sig_keygen");
++        api->sign = (int (*)(unsigned char *, unsigned long long, unsigned char *, unsigned long long, unsigned char *, unsigned long long *))ll_sym(h, "sig_sign");
++        api->verify = (int (*)(unsigned char *, unsigned long long, unsigned char *, unsigned long long, unsigned char *, unsigned long long))ll_sym(h, "sig_verify");
++    } else {
++        api->keygen = (int (*)(unsigned char *, unsigned long long *, unsigned char *, unsigned long long *))ll_sym(h, "kem_keygen");
++        api->enc = (int (*)(unsigned char *, unsigned long long, unsigned char *, unsigned long long *, unsigned char *, unsigned long long *))ll_sym(h, "kem_enc");
++        api->dec = (int (*)(unsigned char *, unsigned long long, unsigned char *, unsigned long long, unsigned char *, unsigned long long *))ll_sym(h, "kem_dec");
++    }
++    if (api->drng == NULL || api->init_random == NULL || api->keygen == NULL ||
++        (kind == PQ_KIND_SIG && (api->sign == NULL || api->verify == NULL)) ||
++        (kind == PQ_KIND_KEM && (api->enc == NULL || api->dec == NULL))) {
++        fprintf(stderr, "light-lattice: missing symbols in %s\n", path);
++        api->failed = 1;
++        pthread_mutex_unlock(&api->load_lock);
++        return 0;
++    }
++    unsigned char seed[64];
++    if (os_random(seed, sizeof(seed)) != 0 ||
++        api->init_random(api->drng, seed, sizeof(seed)) != 0) {
++        fprintf(stderr, "light-lattice: DRNG init failed for %s\n", path);
++        api->failed = 1;
++        pthread_mutex_unlock(&api->load_lock);
++        return 0;
++    }
++    api->loaded = 1;
++    pthread_mutex_unlock(&api->load_lock);
++    return 1;
++}
++
++static int ll_lock(ll_api *api, const char *so_name, int kind) {
++    if (!ll_load(api, so_name, kind)) return 0;
++    pthread_mutex_lock(&api->op_lock);
++    return 1;
++}
++
++static void ll_unlock(ll_api *api) {
++    pthread_mutex_unlock(&api->op_lock);
++}
++
++static int bit_keygen(ll_api *api, const char *so, unsigned char *pk, unsigned char *sk) {
++    if (!ll_lock(api, so, PQ_KIND_SIG)) return PQ_ERR_NOTIMPL;
++    unsigned long long pk_len = 0, sk_len = 0;
++    int st = api->keygen(pk, &pk_len, sk, &sk_len);
++    ll_unlock(api);
++    return st == 0 ? PQ_OK : PQ_ERR_INVALID;
++}
++
++#define BIT_PK(api) ((api) == &bit128_api ? BIT128_PK : (api) == &bit256_api ? BIT256_PK : BIT512_PK)
++#define BIT_SK(api) ((api) == &bit128_api ? BIT128_SK : (api) == &bit256_api ? BIT256_SK : BIT512_SK)
++
++static int bit_sign(ll_api *api, const char *so, const unsigned char *sk,
++                    const unsigned char *msg, size_t msg_len,
++                    unsigned char *sig, size_t sig_cap) {
++    size_t need = api == &bit128_api ? BIT128_SIG : api == &bit256_api ? BIT256_SIG : BIT512_SIG;
++    if (sig_cap < need) return PQ_ERR_BUFFER;
++    if (!ll_lock(api, so, PQ_KIND_SIG)) return PQ_ERR_NOTIMPL;
++    unsigned long long sig_len = 0;
++    int st = api->sign((unsigned char *)sk, BIT_SK(api),
++                       (unsigned char *)msg, msg_len, sig, &sig_len);
++    ll_unlock(api);
++    return st == 0 ? PQ_OK : PQ_ERR_VERIFY;
++}
++
++static int bit_verify(ll_api *api, const char *so, const unsigned char *pk,
++                      const unsigned char *msg, size_t msg_len,
++                      const unsigned char *sig, size_t sig_len) {
++    if (!ll_lock(api, so, PQ_KIND_SIG)) return PQ_ERR_NOTIMPL;
++    int st = api->verify((unsigned char *)pk, BIT_PK(api),
++                         (unsigned char *)sig, sig_len,
++                         (unsigned char *)msg, msg_len);
++    ll_unlock(api);
++    return st == 0 ? PQ_OK : PQ_ERR_VERIFY;
++}
++
++/* The wrappers below need the compile-time sizes; macros expand per level. */
++static int bit128_keygen(unsigned char *pk, unsigned char *sk) { return bit_keygen(&bit128_api, "libbit-128.so", pk, sk); }
++static int bit128_sign(const unsigned char *sk, const unsigned char *m, size_t ml, unsigned char *sig, size_t cap) { return bit_sign(&bit128_api, "libbit-128.so", sk, m, ml, sig, cap); }
++static int bit128_verify(const unsigned char *pk, const unsigned char *m, size_t ml, const unsigned char *sig, size_t sl) { return bit_verify(&bit128_api, "libbit-128.so", pk, m, ml, sig, sl); }
++static int bit256_keygen(unsigned char *pk, unsigned char *sk) { return bit_keygen(&bit256_api, "libbit-256.so", pk, sk); }
++static int bit256_sign(const unsigned char *sk, const unsigned char *m, size_t ml, unsigned char *sig, size_t cap) { return bit_sign(&bit256_api, "libbit-256.so", sk, m, ml, sig, cap); }
++static int bit256_verify(const unsigned char *pk, const unsigned char *m, size_t ml, const unsigned char *sig, size_t sl) { return bit_verify(&bit256_api, "libbit-256.so", pk, m, ml, sig, sl); }
++static int bit512_keygen(unsigned char *pk, unsigned char *sk) { return bit_keygen(&bit512_api, "libbit-512.so", pk, sk); }
++static int bit512_sign(const unsigned char *sk, const unsigned char *m, size_t ml, unsigned char *sig, size_t cap) { return bit_sign(&bit512_api, "libbit-512.so", sk, m, ml, sig, cap); }
++static int bit512_verify(const unsigned char *pk, const unsigned char *m, size_t ml, const unsigned char *sig, size_t sl) { return bit_verify(&bit512_api, "libbit-512.so", pk, m, ml, sig, sl); }
++
++static int polarlac_keygen(ll_api *api, const char *so, unsigned char *pk, unsigned char *sk) {
++    if (!ll_lock(api, so, PQ_KIND_KEM)) return PQ_ERR_NOTIMPL;
++    unsigned long long pk_len = 0, sk_len = 0;
++    int st = api->keygen(pk, &pk_len, sk, &sk_len);
++    ll_unlock(api);
++    return st == 0 ? PQ_OK : PQ_ERR_INVALID;
++}
++
++static int polarlac_pub_from_sk(const unsigned char *sk, unsigned char *pk, size_t pk_len, size_t sk_len) {
++    size_t offset = sk_len - pk_len - POLARLAC_REJECT_SEED;
++    if (sk_len < pk_len + POLARLAC_REJECT_SEED) return PQ_ERR_INVALID;
++    memcpy(pk, sk + offset, pk_len);
++    return PQ_OK;
++}
++
++#define POLARLAC_PK(api) ((api) == &polarlac128_api || (api) == &polarlac_light_api ? 530 : \
++                          (api) == &polarlac256_api ? 1060 : \
++                          (api) == &polarlac512_api ? 2116 : 2522)
++#define POLARLAC_SK(api) ((api) == &polarlac128_api || (api) == &polarlac_light_api ? 1570 : \
++                          (api) == &polarlac256_api ? 3140 : \
++                          (api) == &polarlac512_api ? 6276 : 6682)
++
++static int polarlac_enc(ll_api *api, const char *so, const unsigned char *pk,
++                        unsigned char *ct, size_t ct_cap,
++                        unsigned char *ss, size_t ss_cap) {
++    if (!ll_lock(api, so, PQ_KIND_KEM)) return PQ_ERR_NOTIMPL;
++    unsigned long long ct_len = 0, ss_len = 0;
++    int st = api->enc((unsigned char *)pk, POLARLAC_PK(api),
++                      ss, &ss_len, ct, &ct_len);
++    ll_unlock(api);
++    if (st != 0 || ct_len > ct_cap || ss_len > ss_cap) return PQ_ERR_INVALID;
++    return PQ_OK;
++}
++
++static int polarlac_dec(ll_api *api, const char *so, const unsigned char *sk,
++                        const unsigned char *ct, size_t ct_len,
++                        unsigned char *ss, size_t ss_cap) {
++    if (!ll_lock(api, so, PQ_KIND_KEM)) return PQ_ERR_NOTIMPL;
++    unsigned long long ss_len = 0;
++    int st = api->dec((unsigned char *)sk, POLARLAC_SK(api),
++                      (unsigned char *)ct, ct_len, ss, &ss_len);
++    ll_unlock(api);
++    if (st != 0 || ss_len > ss_cap) return PQ_ERR_INVALID;
++    return PQ_OK;
++}
++
++#define POLARLAC_WRAPPERS(prefix, api, so, pklen, sklen, ctlen, sslen) \
++static int prefix##_keygen(unsigned char *pk, unsigned char *sk) { return polarlac_keygen(&api, so, pk, sk); } \
++static int prefix##_pub(const unsigned char *sk, unsigned char *pk) { return polarlac_pub_from_sk(sk, pk, pklen, sklen); } \
++static int prefix##_enc(const unsigned char *pk, unsigned char *ct, size_t ctcap, unsigned char *ss, size_t sscap) { return polarlac_enc(&api, so, pk, ct, ctcap, ss, sscap); } \
++static int prefix##_dec(const unsigned char *sk, const unsigned char *ct, size_t ct_bytes, unsigned char *ss, size_t sscap) { return polarlac_dec(&api, so, sk, ct, ct_bytes, ss, sscap); }
++
++POLARLAC_WRAPPERS(polarlac128, polarlac128_api, "libpolarlac-128.so", 530, 1570, 640, 16)
++POLARLAC_WRAPPERS(polarlac256, polarlac256_api, "libpolarlac-256.so", 1060, 3140, 1280, 32)
++POLARLAC_WRAPPERS(polarlac512, polarlac512_api, "libpolarlac-512.so", 2116, 6276, 2560, 64)
++POLARLAC_WRAPPERS(polarlac_light, polarlac_light_api, "libpolarlac-Light.so", 530, 1570, 608, 16)
++POLARLAC_WRAPPERS(polarlac_512star, polarlac_512star_api, "libpolarlac-512-Star.so", 2522, 6682, 2970, 64)
++
++const pq_alg pq_bit128 = {
++    .abi_version = PQ_ALG_ABI_VERSION, .kind = PQ_KIND_SIG, .input = PQ_INPUT_DIGEST,
++    .flags = 0, .name = "BiT-128", .oid = "1.3.6.1.4.1.54321.30.1", .tls_code = 0xFE30,
++    .version = "BiT v2.1", .pk_len = BIT128_PK, .sk_len = BIT128_SK, .sig_len = BIT128_SIG,
++    .keygen = bit128_keygen, .sign = bit128_sign, .verify = bit128_verify,
++};
++const pq_alg pq_bit256 = {
++    .abi_version = PQ_ALG_ABI_VERSION, .kind = PQ_KIND_SIG, .input = PQ_INPUT_DIGEST,
++    .flags = 0, .name = "BiT-256", .oid = "1.3.6.1.4.1.54321.30.2", .tls_code = 0xFE31,
++    .version = "BiT v2.1", .pk_len = BIT256_PK, .sk_len = BIT256_SK, .sig_len = BIT256_SIG,
++    .keygen = bit256_keygen, .sign = bit256_sign, .verify = bit256_verify,
++};
++const pq_alg pq_bit512 = {
++    .abi_version = PQ_ALG_ABI_VERSION, .kind = PQ_KIND_SIG, .input = PQ_INPUT_DIGEST,
++    .flags = 0, .name = "BiT-512", .oid = "1.3.6.1.4.1.54321.30.3", .tls_code = 0xFE32,
++    .version = "BiT v2.1", .pk_len = BIT512_PK, .sk_len = BIT512_SK, .sig_len = BIT512_SIG,
++    .keygen = bit512_keygen, .sign = bit512_sign, .verify = bit512_verify,
++};
++
++#define POLARLAC_DESC(sym, str, oidv, pkv, skv, ctv, ssv, kfn, pfn, efn, dfn) \
++const pq_alg sym = { \
++    .abi_version = PQ_ALG_ABI_VERSION, .kind = PQ_KIND_KEM, .input = PQ_INPUT_MESSAGE, \
++    .flags = 0, .name = str, .oid = oidv, .tls_code = 0, .version = "PolarLAC v1.0", \
++    .pk_len = pkv, .sk_len = skv, .ct_len = ctv, .ss_len = ssv, \
++    .keygen = kfn, .pub_from_sk = pfn, .encaps = efn, .decaps = dfn, \
++}
++POLARLAC_DESC(polarlac128, "POLARLAC-128", "1.3.6.1.4.1.54321.31.1", 530, 1570, 640, 16, polarlac128_keygen, polarlac128_pub, polarlac128_enc, polarlac128_dec);
++POLARLAC_DESC(polarlac256, "POLARLAC-256", "1.3.6.1.4.1.54321.31.2", 1060, 3140, 1280, 32, polarlac256_keygen, polarlac256_pub, polarlac256_enc, polarlac256_dec);
++POLARLAC_DESC(polarlac512, "POLARLAC-512", "1.3.6.1.4.1.54321.31.3", 2116, 6276, 2560, 64, polarlac512_keygen, polarlac512_pub, polarlac512_enc, polarlac512_dec);
++POLARLAC_DESC(polarlac_light, "POLARLAC-Light", "1.3.6.1.4.1.54321.31.4", 530, 1570, 608, 16, polarlac_light_keygen, polarlac_light_pub, polarlac_light_enc, polarlac_light_dec);
++POLARLAC_DESC(polarlac_512star, "POLARLAC-512-Star", "1.3.6.1.4.1.54321.31.5", 2522, 6682, 2970, 64, polarlac_512star_keygen, polarlac_512star_pub, polarlac_512star_enc, polarlac_512star_dec);
+diff -ruN .build/patch-seq9/src/crypto/pq/pq.go .build/extracted/go_kemtls/src/crypto/pq/pq.go
+--- a/src/crypto/pq/pq.go	2026-11-22 12:20:20.259922342 +0800
++++ b/src/crypto/pq/pq.go	2026-11-22 15:33:38.552265612 +0800
+@@ -8,6 +8,7 @@
+ 
+ /*
+ #cgo CFLAGS: -I${SRCDIR}/include -std=c11
++#cgo LDFLAGS: -ldl -lpthread
+ #include "pq_alg.h"
+ #include <stdlib.h>
+ 
+diff -ruN .build/patch-seq9/src/crypto/pq/pq_registry.c .build/extracted/go_kemtls/src/crypto/pq/pq_registry.c
+--- a/src/crypto/pq/pq_registry.c	2026-11-20 09:34:22.000000000 +0800
++++ b/src/crypto/pq/pq_registry.c	2026-11-22 15:33:31.851972967 +0800
+@@ -8,12 +8,28 @@
+ extern const pq_alg pq_kem_template;
+ extern const pq_alg pq_placeholder_sig;
+ extern const pq_alg pq_placeholder_kem;
++extern const pq_alg pq_bit128;
++extern const pq_alg pq_bit256;
++extern const pq_alg pq_bit512;
++extern const pq_alg polarlac128;
++extern const pq_alg polarlac256;
++extern const pq_alg polarlac512;
++extern const pq_alg polarlac_light;
++extern const pq_alg polarlac_512star;
+ 
+ static const pq_alg *const pq_builtin[] = {
+     &pq_bit,
+     &pq_kem_template,
+     &pq_placeholder_sig,
+     &pq_placeholder_kem,
++    &pq_bit128,
++    &pq_bit256,
++    &pq_bit512,
++    &polarlac128,
++    &polarlac256,
++    &polarlac512,
++    &polarlac_light,
++    &polarlac_512star,
+ };
+ 
+ #define PQ_BUILTIN_COUNT (sizeof(pq_builtin) / sizeof(pq_builtin[0]))
+@@ -38,13 +54,18 @@
+     if (is_placeholder(a)) {
+         return 1;
+     }
+-    if (a->keygen == NULL || a->pub_from_sk == NULL) {
++    if (a->keygen == NULL) {
+         return 0;
+     }
+     if (a->kind == PQ_KIND_SIG) {
++        /* Some signature providers only have keygen/sign/verify; their
++         * certificates carry the public key generated by keygen. */
+         return a->pk_len != 0 && a->sk_len != 0 && a->sig_len != 0 &&
+                a->sign != NULL && a->verify != NULL;
+     }
++    if (a->pub_from_sk == NULL) {
++        return 0;
++    }
+     return a->pk_len != 0 && a->sk_len != 0 && a->ct_len != 0 &&
+            a->ss_len != 0 && a->encaps != NULL && a->decaps != NULL;
+ }
