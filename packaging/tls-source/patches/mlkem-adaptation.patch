@@ -279,12 +279,12 @@ diff -ruN .build/patch-seq7/src/crypto/tls/handshake_server_tls13.go .build/extr
  			return errors.New("tls: invalid PQ key exchange")
 diff -ruN .build/patch-seq7/src/crypto/tls/pq_kex.go .build/extracted/go_kemtls/src/crypto/tls/pq_kex.go
 --- a/src/crypto/tls/pq_kex.go	1970-01-01 08:00:00.000000000 +0800
-+++ b/src/crypto/tls/pq_kex.go	2026-11-22 12:13:21.580104196 +0800
-@@ -0,0 +1,112 @@
++++ b/src/crypto/tls/pq_kex.go	2026-11-22 12:19:12.120924514 +0800
+@@ -0,0 +1,97 @@
 +package tls
 +
 +import (
-+	"crypto/mlkem"
++	"crypto/pq"
 +	"fmt"
 +
 +	"github.com/cloudflare/circl/kem"
@@ -301,21 +301,21 @@ diff -ruN .build/patch-seq7/src/crypto/tls/pq_kex.go .build/extracted/go_kemtls/
 +}
 +
 +func pqKEXSizes(alg string) (pk, ct int, err error) {
-+	switch alg {
-+	case "Kyber768":
++	if alg == "Kyber768" {
 +		return kyber768.PublicKeySize, kyber768.CiphertextSize, nil
-+	case "ML-KEM-768":
-+		return 1184, 1088, nil
-+	case "ML-KEM-1024":
-+		return 1568, 1568, nil
-+	default:
-+		return 0, 0, fmt.Errorf("tls: unsupported KEX KEM algorithm %q", alg)
 +	}
++	a, err := pq.Lookup(alg)
++	if err != nil {
++		return 0, 0, fmt.Errorf("tls: KEX KEM %q not registered: %w", alg, err)
++	}
++	if a.Kind() != pq.KindKEM || !a.Available() {
++		return 0, 0, fmt.Errorf("tls: KEX KEM %q unavailable", alg)
++	}
++	return a.PublicKeySize(), a.CiphertextSize(), nil
 +}
 +
 +func pqKEXGenerate(alg string) (pub []byte, priv any, err error) {
-+	switch alg {
-+	case "Kyber768":
++	if alg == "Kyber768" {
 +		pk, sk, err := kyber768.Scheme().GenerateKeyPair()
 +		if err != nil {
 +			return nil, nil, err
@@ -325,73 +325,58 @@ diff -ruN .build/patch-seq7/src/crypto/tls/pq_kex.go .build/extracted/go_kemtls/
 +			return nil, nil, err
 +		}
 +		return raw, sk, nil
-+	case "ML-KEM-768":
-+		dk, err := mlkem.GenerateKey768()
-+		if err != nil {
-+			return nil, nil, err
-+		}
-+		return dk.EncapsulationKey().Bytes(), dk, nil
-+	case "ML-KEM-1024":
-+		dk, err := mlkem.GenerateKey1024()
-+		if err != nil {
-+			return nil, nil, err
-+		}
-+		return dk.EncapsulationKey().Bytes(), dk, nil
-+	default:
-+		return nil, nil, fmt.Errorf("tls: unsupported KEX KEM algorithm %q", alg)
 +	}
++	a, err := pq.Lookup(alg)
++	if err != nil {
++		return nil, nil, fmt.Errorf("tls: KEX KEM %q not registered: %w", alg, err)
++	}
++	kp, err := a.GenerateKey()
++	if err != nil {
++		return nil, nil, err
++	}
++	return kp.Public.Raw, kp.Private.Raw, nil
 +}
 +
 +func pqKEXEncapsulate(alg string, pub []byte) (ct, ss []byte, err error) {
-+	switch alg {
-+	case "Kyber768":
++	if alg == "Kyber768" {
 +		pk, err := kyber768.Scheme().UnmarshalBinaryPublicKey(pub)
 +		if err != nil {
 +			return nil, nil, err
 +		}
 +		return kyber768.Scheme().Encapsulate(pk)
-+	case "ML-KEM-768":
-+		ek, err := mlkem.NewEncapsulationKey768(pub)
-+		if err != nil {
-+			return nil, nil, err
-+		}
-+		ss, ct = ek.Encapsulate()
-+		return ct, ss, nil
-+	case "ML-KEM-1024":
-+		ek, err := mlkem.NewEncapsulationKey1024(pub)
-+		if err != nil {
-+			return nil, nil, err
-+		}
-+		ss, ct = ek.Encapsulate()
-+		return ct, ss, nil
-+	default:
-+		return nil, nil, fmt.Errorf("tls: unsupported KEX KEM algorithm %q", alg)
 +	}
++	a, err := pq.Lookup(alg)
++	if err != nil {
++		return nil, nil, fmt.Errorf("tls: KEX KEM %q not registered: %w", alg, err)
++	}
++	pk, err := a.ParsePublicKey(pub)
++	if err != nil {
++		return nil, nil, err
++	}
++	return a.Encapsulate(pk)
 +}
 +
 +func pqKEXDecapsulate(alg string, priv any, ct []byte) ([]byte, error) {
-+	switch alg {
-+	case "Kyber768":
++	if alg == "Kyber768" {
 +		sk, ok := priv.(kem.PrivateKey)
 +		if !ok {
 +			return nil, fmt.Errorf("tls: invalid Kyber private key type")
 +		}
 +		return kyber768.Scheme().Decapsulate(sk, ct)
-+	case "ML-KEM-768":
-+		dk, ok := priv.(*mlkem.DecapsulationKey768)
-+		if !ok {
-+			return nil, fmt.Errorf("tls: invalid ML-KEM-768 private key type")
-+		}
-+		return dk.Decapsulate(ct)
-+	case "ML-KEM-1024":
-+		dk, ok := priv.(*mlkem.DecapsulationKey1024)
-+		if !ok {
-+			return nil, fmt.Errorf("tls: invalid ML-KEM-1024 private key type")
-+		}
-+		return dk.Decapsulate(ct)
-+	default:
-+		return nil, fmt.Errorf("tls: unsupported KEX KEM algorithm %q", alg)
 +	}
++	raw, ok := priv.([]byte)
++	if !ok {
++		return nil, fmt.Errorf("tls: invalid KEM private key type %T", priv)
++	}
++	a, err := pq.Lookup(alg)
++	if err != nil {
++		return nil, fmt.Errorf("tls: KEX KEM %q not registered: %w", alg, err)
++	}
++	sk, err := a.ParsePrivateKey(raw)
++	if err != nil {
++		return nil, err
++	}
++	return a.Decapsulate(sk, ct)
 +}
 diff -ruN .build/pq-baseline/src/crypto/pq/mlkem.go .build/extracted/go_kemtls/src/crypto/pq/mlkem.go
 --- a/src/crypto/pq/mlkem.go	1970-01-01 08:00:00.000000000 +0800

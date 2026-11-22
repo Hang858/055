@@ -186,3 +186,18 @@ RSA 认证 + 通用 KEM 密文交换，不能称为完整的 KEMTLS 抗量子认
 `PLACEHOLDER-SIG` / `PLACEHOLDER-KEM` 是**玩具算法**，只用于验证注册表和 cgo 边界，
 不能用于任何真实连接。`BiT` 描述符的 OID `1.3.6.1.4.1.54321.22.1` 和 TLS 码点 `0xFE20`
 也是占位值，正式启用前必须确认企业 OID 和私有码点，避免与现有/未来算法冲突。
+
+## 新增 KEM 的接口
+
+后续新增 C KEM 不需要改 TLS：
+
+1. 实现 `pq_alg` 的 `keygen / pub_from_sk / encaps / decaps`；
+2. 在 `pq_registry.c` 的 `pq_builtin[]` 添加描述符，或启动前
+   `pq_alg_register()`；
+3. TLS 用 `KEMTLS_KEX_ALG` 选 KEX/ServerKeyGen，用 `KEMTLS_KEM_ALG` +
+   证书 `.1.4` OID 选 KEM 证书。
+
+`crypto/tls/pq_kex.go` 已改为通过 `crypto/pq` 查找算法，只有 Kyber768 保留
+旧 CIRCL 兼容分支。`PLACEHOLDER-KEM` 已作为纯 C 注册表样例跑通 ServerKeyGen。
+
+详见 `docs/KEM接入接口-20261122.md`。
